@@ -1,0 +1,698 @@
+<!DOCTYPE html>
+<html lang="uk">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Yoga Space Baryshivka</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script src="https://unpkg.com/react@18/umd/react.development.js"></script>
+  <script src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+  
+  <link href="https://fonts.googleapis.com/css2?family=Playfair+Display:ital,wght@0,600;0,700;1,400&family=Montserrat:wght@400;500;600;700&display=swap" rel="stylesheet">
+  
+  <style>
+    body {
+      font-family: 'Montserrat', sans-serif;
+      background-color: #F8F6F2;
+      color: #29221D;
+    }
+    .font-serif-title {
+      font-family: 'Playfair Display', serif;
+    }
+  </style>
+</head>
+<body class="min-h-screen relative overflow-x-hidden">
+
+  <!-- Фоновий лотос -->
+  <svg class="absolute top-[-5%] left-[-10%] w-[120%] opacity-5 pointer-events-none z-0" viewBox="0 0 200 200" xmlns="http://www.w3.org/2000/svg">
+    <path fill="#29221D" d="M41.7,-64.3C53.3,-55.8,61.4,-42.6,67.6,-28.5C73.9,-14.5,78.3,0.3,75.4,14.1C72.6,27.9,62.4,40.7,50.1,51C37.8,61.3,23.3,69.2,7.3,71.2C-8.7,73.2,-26.1,69.2,-41.2,60.2C-56.3,51.1,-69,37.1,-75.6,20.4C-82.2,3.7,-82.7,-15.8,-75.4,-31.8C-68,-47.9,-52.8,-60.5,-37.2,-67.7C-21.6,-74.9,-5.6,-76.8,9.4,-72C24.4,-67.1,41.7,-64.3,41.7,-64.3Z" transform="translate(100 100)" />
+  </svg>
+
+  <div id="root" class="relative z-10"></div>
+
+  <script type="text/babel">
+    const { useState, useEffect } = React;
+
+    const ADMIN_PIN = '1234'; 
+
+    const INITIAL_TRAININGS = [
+      { id: 't1', day: 'Понеділок', date: 'Найближчий', time: '20:15', maxCapacity: 10, bookings: [] },
+      { id: 't2', day: 'Середа', date: 'Найближча', time: '20:15', maxCapacity: 10, bookings: [] },
+      { id: 't3', day: "П'ятниця", date: 'Найближча', time: '20:15', maxCapacity: 10, bookings: [] },
+    ];
+
+    function App() {
+      const [trainings, setTrainings] = useState(() => {
+        const saved = localStorage.getItem('yoga_baryshivka_db');
+        return saved ? JSON.parse(saved) : INITIAL_TRAININGS;
+      });
+
+      const [activeTab, setActiveTab] = useState('client'); 
+      const [bookingModal, setBookingModal] = useState(null); 
+      const [rescheduleModal, setRescheduleModal] = useState(null); 
+      
+      const [isAdminLoggedIn, setIsAdminLoggedIn] = useState(false);
+      const [pinInput, setPinInput] = useState('');
+      const [pinError, setPinError] = useState(false);
+
+      const [formData, setFormData] = useState({ 
+        name: '', 
+        phone: '', 
+        instagram: '',
+        needReminder: true,
+        reminderTime: '3h'
+      });
+      const [personsCount, setPersonsCount] = useState(1);
+      const [contactError, setContactError] = useState(false);
+
+      const [userSearchQuery, setUserSearchQuery] = useState('');
+
+      useEffect(() => {
+        localStorage.setItem('yoga_baryshivka_db', JSON.stringify(trainings));
+      }, [trainings]);
+
+      const getBookedCount = (training) => {
+        return training.bookings.reduce((sum, b) => sum + (b.personsCount || 1), 0);
+      };
+
+      const handleBooking = (e) => {
+        e.preventDefault();
+        const phoneClean = formData.phone.trim();
+        const instaClean = formData.instagram.trim();
+        
+        if (!phoneClean && !instaClean) {
+          setContactError(true);
+          return;
+        }
+
+        const newBooking = {
+          id: 'b_' + Date.now(),
+          name: formData.name,
+          phone: phoneClean,
+          instagram: instaClean,
+          type: bookingModal.type,
+          personsCount: personsCount,
+          needReminder: formData.needReminder,
+          reminderTime: formData.needReminder ? formData.reminderTime : null,
+          createdAt: new Date().toLocaleDateString('uk-UA')
+        };
+
+        setTrainings(prev => prev.map(t => {
+          if (t.id === bookingModal.training.id) {
+            return { ...t, bookings: [...t.bookings, newBooking] };
+          }
+          return t;
+        }));
+
+        localStorage.setItem('yoga_user_contact', phoneClean || instaClean);
+        
+        setFormData({ name: '', phone: '', instagram: '', needReminder: true, reminderTime: '3h' });
+        setPersonsCount(1);
+        setBookingModal(null);
+        setContactError(false);
+        alert(`Дякуємо! Ви успішно записані (${personsCount} осіб) 🙏`);
+      };
+
+      const handleCancelBooking = (trainingId, bookingId) => {
+        if (!confirm('Ви дійсно бажаєте скасувати цей запис?')) return;
+        setTrainings(prev => prev.map(t => {
+          if (t.id === trainingId) {
+            return { ...t, bookings: t.bookings.filter(b => b.id !== bookingId) };
+          }
+          return t;
+        }));
+      };
+
+      const handleReschedule = (targetTrainingId) => {
+        const { currentTrainingId, booking } = rescheduleModal;
+        if (currentTrainingId === targetTrainingId) return;
+
+        setTrainings(prev => prev.map(t => {
+          if (t.id === currentTrainingId) {
+            return { ...t, bookings: t.bookings.filter(b => b.id !== booking.id) };
+          }
+          if (t.id === targetTrainingId) {
+            return { ...t, bookings: [...t.bookings, booking] };
+          }
+          return t;
+        }));
+
+        setRescheduleModal(null);
+        alert('Запис успішно перенесено!');
+      };
+
+      const handleAdminLogin = (e) => {
+        e.preventDefault();
+        if (pinInput === ADMIN_PIN) {
+          setIsAdminLoggedIn(true);
+          setPinError(false);
+          setPinInput('');
+        } else {
+          setPinError(true);
+        }
+      };
+
+      return (
+        <div className="max-w-md mx-auto min-h-screen flex flex-col justify-between p-4 sm:p-6">
+          
+          {/* ШАПКА */}
+          <header className="mb-6 text-center mt-2">
+            <h1 className="text-4xl sm:text-5xl font-serif-title font-bold text-stone-900 mb-1 tracking-widest uppercase">ЙОГА</h1>
+            <p className="text-xs tracking-widest text-stone-600 uppercase font-bold">Yoga Space Baryshivka</p>
+            
+            <nav className="flex justify-center gap-4 sm:gap-6 mt-5 border-b border-stone-300 pb-3 text-xs font-bold uppercase tracking-wider">
+              <button 
+                onClick={() => setActiveTab('client')} 
+                className={activeTab === 'client' ? 'text-stone-950 border-b-2 border-stone-900 pb-1' : 'text-stone-400 hover:text-stone-700'}
+              >
+                Розклад
+              </button>
+
+              <button 
+                onClick={() => {
+                  setActiveTab('my-bookings');
+                  const savedContact = localStorage.getItem('yoga_user_contact');
+                  if (savedContact) setUserSearchQuery(savedContact);
+                }} 
+                className={activeTab === 'my-bookings' ? 'text-stone-950 border-b-2 border-stone-900 pb-1' : 'text-stone-400 hover:text-stone-700'}
+              >
+                Мої записи
+              </button>
+
+              <button 
+                onClick={() => setActiveTab('admin')} 
+                className={activeTab === 'admin' ? 'text-stone-950 border-b-2 border-stone-900 pb-1' : 'text-stone-400 hover:text-stone-700'}
+              >
+                Адмінка
+              </button>
+            </nav>
+          </header>
+
+          <main className="flex-1">
+            
+            {/* --- РОЗКЛАД --- */}
+            {activeTab === 'client' && (
+              <div className="space-y-6">
+                
+                <div className="bg-stone-100/90 p-5 rounded-2xl border border-stone-300 text-center space-y-3 shadow-sm">
+                  <div>
+                    <p className="text-[11px] uppercase tracking-widest text-stone-500 font-bold mb-0.5">Стиль</p>
+                    <p className="font-serif-title text-xl font-bold text-stone-900">Хатха-йога</p>
+                  </div>
+                  <div className="w-12 h-px bg-stone-300 mx-auto"></div>
+                  <div>
+                    <p className="text-sm font-bold text-stone-800">Тривалість: 45-50 хв</p>
+                    <p className="text-xs font-medium text-stone-600 mt-0.5">Понеділок, Середа, П'ятниця о 20:15</p>
+                  </div>
+
+                  <div className="bg-white p-3 rounded-xl border border-stone-200 shadow-inner flex items-center justify-center gap-2">
+                    <span className="text-sm text-stone-900 font-serif-title italic font-medium">
+                      Після кожного заняття на вас чекає чайна церемонія
+                    </span>
+                    <div className="flex items-center gap-1.5 text-amber-900">
+                      <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M18 8h1a4 4 0 010 8h-1M2 8h16v9a4 4 0 01-4 4H6a4 4 0 01-4-4V8z"></path>
+                      </svg>
+                    </div>
+                  </div>
+                </div>
+
+                <div className="space-y-4">
+                  <h2 className="text-center font-serif-title text-2xl font-bold text-stone-900 mb-2">Розклад та Запис</h2>
+                  
+                  {trainings.map(t => {
+                    const bookedCount = getBookedCount(t);
+                    const freeSlots = t.maxCapacity - bookedCount;
+                    const isFull = freeSlots <= 0;
+
+                    return (
+                      <div key={t.id} className="bg-white border border-stone-300 rounded-2xl p-5 shadow-sm relative overflow-hidden">
+                        <div className="absolute left-0 top-0 bottom-0 w-1.5 bg-stone-800"></div>
+                        
+                        <div className="flex justify-between items-center mb-3">
+                          <div>
+                            <h3 className="font-serif-title text-2xl font-bold text-stone-900">{t.day}</h3>
+                            <p className="text-xs font-bold text-stone-400 uppercase tracking-wider">{t.date}</p>
+                          </div>
+                          <div className="text-right">
+                            <span className="text-2xl font-bold text-stone-800">{t.time}</span>
+                          </div>
+                        </div>
+
+                        <div className="flex justify-between items-center text-xs mb-4 font-semibold">
+                          <span className="text-stone-600">Вільних килимків:</span>
+                          <span className={isFull ? "text-red-600 font-bold" : "text-stone-900 font-bold"}>
+                            {isFull ? 'Група заповнена' : `${freeSlots} з ${t.maxCapacity}`}
+                          </span>
+                        </div>
+
+                        <div className="grid grid-cols-2 gap-2 mt-2">
+                          <button
+                            disabled={isFull}
+                            onClick={() => { setPersonsCount(1); setBookingModal({ training: t, type: 'trial' }); }}
+                            className={`py-3 px-2 rounded-xl text-xs font-bold uppercase tracking-wider transition-all text-center ${
+                              isFull 
+                                ? 'bg-stone-100 text-stone-400 border border-stone-200 cursor-not-allowed' 
+                                : 'bg-amber-100 text-amber-950 border border-amber-300 hover:bg-amber-200 active:scale-[0.98]'
+                            }`}
+                          >
+                            Пробне (150₴)
+                          </button>
+
+                          <button
+                            disabled={isFull}
+                            onClick={() => { setPersonsCount(1); setBookingModal({ training: t, type: 'regular' }); }}
+                            className={`py-3 px-2 rounded-xl text-xs font-bold uppercase tracking-wider transition-all text-center shadow-sm ${
+                              isFull 
+                                ? 'bg-stone-100 text-stone-400 border border-stone-200 cursor-not-allowed' 
+                                : 'bg-stone-800 text-white hover:bg-stone-900 active:scale-[0.98]'
+                            }`}
+                          >
+                            Повторне (200₴)
+                          </button>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+                
+                <div className="text-center text-xs text-stone-600 mt-8 pt-6 border-t border-stone-300">
+                  <p className="font-bold text-stone-900 mb-0.5">Адреса проведення:</p>
+                  <p className="font-medium">Баришівка, вул. Центральна 2а, 3 поверх</p>
+                </div>
+              </div>
+            )}
+
+            {/* --- МОЇ ЗАПИСИ --- */}
+            {activeTab === 'my-bookings' && (
+              <div className="space-y-4">
+                <div className="bg-white p-5 rounded-2xl border border-stone-300 shadow-sm">
+                  <h3 className="font-serif-title text-xl font-bold text-stone-900 mb-1">Пошук ваших записів</h3>
+                  <p className="text-xs text-stone-600 mb-3">Введіть ваш телефон або Instagram, щоб керувати записами:</p>
+                  
+                  <input
+                    type="text"
+                    placeholder="Телефон або Instagram..."
+                    value={userSearchQuery}
+                    onChange={(e) => setUserSearchQuery(e.target.value)}
+                    className="w-full bg-stone-50 border-2 border-stone-200 text-stone-900 font-semibold rounded-xl px-4 py-3 text-sm focus:outline-none focus:border-stone-800"
+                  />
+                </div>
+
+                <h3 className="font-serif-title text-lg font-bold text-stone-900 mt-6">Знайдені записи:</h3>
+
+                {(() => {
+                  const query = userSearchQuery.trim().toLowerCase();
+                  if (!query) {
+                    return <p className="text-xs text-stone-500 text-center py-6 italic">Введіть ваші дані у полі вище.</p>;
+                  }
+
+                  let foundBookings = [];
+                  trainings.forEach(t => {
+                    t.bookings.forEach(b => {
+                      const matchPhone = b.phone && b.phone.toLowerCase().includes(query);
+                      const matchInsta = b.instagram && b.instagram.toLowerCase().includes(query);
+                      if (matchPhone || matchInsta) {
+                        foundBookings.push({ training: t, booking: b });
+                      }
+                    });
+                  });
+
+                  if (foundBookings.length === 0) {
+                    return <p className="text-xs text-stone-500 text-center py-6 italic">Записів за цим контактом не знайдено.</p>;
+                  }
+
+                  return (
+                    <div className="space-y-3">
+                      {foundBookings.map(({ training, booking }) => (
+                        <div key={booking.id} className="bg-white border border-stone-300 rounded-2xl p-4 shadow-sm">
+                          <div className="flex justify-between items-start mb-2 pb-2 border-b border-stone-200">
+                            <div>
+                              <span className="text-xs font-bold text-amber-900 uppercase">{training.day} • {training.time}</span>
+                              <h4 className="font-bold text-stone-900 text-base">{booking.name}</h4>
+                            </div>
+                            <span className="text-xs font-bold bg-stone-100 text-stone-800 px-2.5 py-1 rounded-lg">
+                              👥 {booking.personsCount || 1} осіб
+                            </span>
+                          </div>
+
+                          {booking.needReminder && (
+                            <p className="text-[11px] font-bold text-stone-600 mb-3 flex items-center gap-1">
+                              <span>🔔 Нагадування:</span>
+                              <span className="text-amber-900">{booking.reminderTime === '1d' ? 'За 1 день' : 'За 3 години'}</span>
+                            </p>
+                          )}
+
+                          <div className="flex gap-2 pt-1">
+                            <button
+                              onClick={() => setRescheduleModal({ currentTrainingId: training.id, booking })}
+                              className="flex-1 py-2.5 bg-stone-100 hover:bg-stone-200 text-stone-900 text-xs font-bold rounded-xl border border-stone-300 transition-all"
+                            >
+                              🔄 Перенести
+                            </button>
+
+                            <button
+                              onClick={() => handleCancelBooking(training.id, booking.id)}
+                              className="flex-1 py-2.5 bg-red-50 hover:bg-red-100 text-red-700 text-xs font-bold rounded-xl border border-red-200 transition-all"
+                            >
+                              ✕ Скасувати
+                            </button>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  );
+                })()}
+              </div>
+            )}
+
+            {/* --- АДМІНКА --- */}
+            {activeTab === 'admin' && (
+              <div>
+                {!isAdminLoggedIn ? (
+                  <div className="bg-white border border-stone-300 rounded-2xl p-6 text-center shadow-sm">
+                    <h2 className="font-serif-title text-2xl font-bold text-stone-900 mb-2">Вхід в Адмінку</h2>
+                    <p className="text-xs text-stone-600 mb-4">Введіть ПИН-код адміністратора:</p>
+                    
+                    <form onSubmit={handleAdminLogin} className="space-y-3">
+                      <input
+                        type="password"
+                        placeholder="ПИН-код"
+                        value={pinInput}
+                        onChange={(e) => setPinInput(e.target.value)}
+                        className="w-full bg-stone-50 border-2 border-stone-200 text-center font-bold text-lg rounded-xl px-4 py-2.5 text-stone-900 focus:outline-none focus:border-stone-800"
+                      />
+                      {pinError && <p className="text-xs font-bold text-red-600">Невірний ПИН-код!</p>}
+                      
+                      <button
+                        type="submit"
+                        className="w-full py-3 bg-stone-900 text-white font-bold text-xs uppercase tracking-wider rounded-xl hover:bg-stone-950"
+                      >
+                        Увійти
+                      </button>
+                    </form>
+                  </div>
+                ) : (
+                  <div className="space-y-4">
+                    <div className="flex justify-between items-center mb-4">
+                      <h2 className="font-serif-title text-2xl font-bold text-stone-900">Список груп</h2>
+                      <button 
+                        onClick={() => setIsAdminLoggedIn(false)}
+                        className="text-xs text-stone-500 underline hover:text-stone-900"
+                      >
+                        Вийти
+                      </button>
+                    </div>
+
+                    {trainings.map(t => {
+                      const bookedCount = getBookedCount(t);
+                      return (
+                        <div key={t.id} className="bg-white border border-stone-300 rounded-2xl p-4 shadow-sm">
+                          <div className="flex justify-between items-center mb-3 pb-2 border-b border-stone-200">
+                            <div>
+                              <h3 className="font-bold text-stone-900">{t.day} ({t.time})</h3>
+                              <p className="text-xs font-medium text-stone-600">Зайнято місць: {bookedCount} з {t.maxCapacity}</p>
+                            </div>
+                          </div>
+
+                          {t.bookings.length === 0 ? (
+                            <p className="text-xs text-stone-400 py-2 text-center italic">Записів ще немає</p>
+                          ) : (
+                            <div className="space-y-2">
+                              {t.bookings.map((b, idx) => (
+                                <div key={b.id} className="flex items-center justify-between bg-stone-50 p-3 rounded-xl border border-stone-200">
+                                  <div className="flex-1">
+                                    <div className="flex items-center gap-1.5 flex-wrap">
+                                      <span className="text-xs font-bold text-stone-400">{idx + 1}.</span>
+                                      <p className="font-bold text-sm text-stone-900">{b.name}</p>
+                                      
+                                      {(b.personsCount || 1) > 1 && (
+                                        <span className="text-[10px] font-bold px-2 py-0.5 rounded-md bg-stone-800 text-white">
+                                          👥 {b.personsCount} осіб
+                                        </span>
+                                      )}
+
+                                      <span className={`text-[10px] font-bold px-2 py-0.5 rounded-md uppercase ${b.type === 'trial' ? 'bg-amber-100 text-amber-900 border border-amber-300' : 'bg-stone-200 text-stone-800'}`}>
+                                        {b.type === 'trial' ? 'Пробне' : 'Повторне'}
+                                      </span>
+
+                                      {b.needReminder && (
+                                        <span className="text-[10px] font-bold px-2 py-0.5 rounded-md bg-amber-50 text-amber-900 border border-amber-200">
+                                          🔔 {b.reminderTime === '1d' ? 'За 1 день' : 'За 3 год'}
+                                        </span>
+                                      )}
+                                    </div>
+                                    <div className="text-xs text-stone-700 font-medium mt-1.5 flex flex-col gap-0.5 pl-4">
+                                      {b.phone && <span>📞 {b.phone}</span>}
+                                      {b.instagram && <span>📸 @{b.instagram.replace('@', '')}</span>}
+                                    </div>
+                                  </div>
+                                  <button
+                                    onClick={() => handleCancelBooking(t.id, b.id)}
+                                    className="text-red-600 hover:text-red-800 p-2 text-xs font-bold ml-2"
+                                    title="Видалити"
+                                  >
+                                    ✕
+                                  </button>
+                                </div>
+                              ))}
+                            </div>
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+            )}
+          </main>
+
+          {/* МОДАЛКА ПЕРЕНОСУ */}
+          {rescheduleModal && (
+            <div className="fixed inset-0 bg-stone-950/75 backdrop-blur-sm flex items-end sm:items-center justify-center p-0 sm:p-4 z-50">
+              <div className="bg-white w-full sm:max-w-md rounded-t-3xl sm:rounded-2xl p-6 shadow-2xl border border-stone-300">
+                <div className="flex justify-between items-start mb-4 pb-2 border-b border-stone-200">
+                  <div>
+                    <h3 className="font-serif-title text-xl font-bold text-stone-900">Перенос записи</h3>
+                    <p className="text-xs text-stone-600 mt-0.5">Оберіть нову дату для заняття:</p>
+                  </div>
+                  <button onClick={() => setRescheduleModal(null)} className="text-stone-400 font-bold">✕</button>
+                </div>
+
+                <div className="space-y-2.5 my-4">
+                  {trainings.map(t => {
+                    const freeSlots = t.maxCapacity - getBookedCount(t);
+                    const isCurrent = t.id === rescheduleModal.currentTrainingId;
+                    const canFit = freeSlots >= (rescheduleModal.booking.personsCount || 1);
+
+                    return (
+                      <button
+                        key={t.id}
+                        disabled={isCurrent || !canFit}
+                        onClick={() => handleReschedule(t.id)}
+                        className={`w-full p-3.5 rounded-xl border font-bold text-xs text-left flex justify-between items-center transition-all ${
+                          isCurrent 
+                            ? 'bg-stone-100 border-stone-200 text-stone-400 cursor-default' 
+                            : !canFit 
+                              ? 'bg-stone-50 border-stone-200 text-red-400 cursor-not-allowed'
+                              : 'bg-white border-stone-300 text-stone-900 hover:bg-amber-50 hover:border-amber-300'
+                        }`}
+                      >
+                        <div>
+                          <span className="text-sm block">{t.day} ({t.time})</span>
+                          <span className="text-[10px] font-normal text-stone-500">
+                            {isCurrent ? 'Поточна дата' : `Вільних місць: ${freeSlots}`}
+                          </span>
+                        </div>
+                        {!isCurrent && canFit && <span className="text-amber-900">Обрати ➔</span>}
+                      </button>
+                    );
+                  })}
+                </div>
+
+                <button 
+                  onClick={() => setRescheduleModal(null)} 
+                  className="w-full py-3 bg-stone-200 font-bold text-xs rounded-xl text-stone-800"
+                >
+                  Скасувати
+                </button>
+              </div>
+            </div>
+          )}
+
+          {/* МОДАЛКА СТВОРЕННЯ ЗАПИСУ */}
+          {bookingModal && (() => {
+            const freeSlots = bookingModal.training.maxCapacity - getBookedCount(bookingModal.training);
+            const pricePerPerson = bookingModal.type === 'trial' ? 150 : 200;
+            const totalPrice = pricePerPerson * personsCount;
+
+            return (
+              <div className="fixed inset-0 bg-stone-950/75 backdrop-blur-sm flex items-end sm:items-center justify-center p-0 sm:p-4 z-50">
+                <div className="bg-white w-full sm:max-w-md rounded-t-3xl sm:rounded-2xl p-6 shadow-2xl border border-stone-300 max-h-[90vh] overflow-y-auto">
+                  
+                  <div className="flex justify-between items-start mb-5 pb-3 border-b border-stone-200">
+                    <div>
+                      <h3 className="font-serif-title text-2xl font-bold text-stone-900">
+                        {bookingModal.type === 'trial' ? 'Пробне заняття' : 'Запис на йогу'}
+                      </h3>
+                      <p className="text-xs font-bold text-stone-500 uppercase tracking-wider mt-1">
+                        {bookingModal.training.day} • {bookingModal.training.time}
+                      </p>
+                    </div>
+                    <button 
+                      onClick={() => { setBookingModal(null); setContactError(false); }} 
+                      className="text-stone-500 hover:text-stone-900 bg-stone-100 rounded-full w-8 h-8 flex items-center justify-center text-sm font-bold"
+                    >
+                      ✕
+                    </button>
+                  </div>
+
+                  <form onSubmit={handleBooking} className="space-y-4">
+                    
+                    {/* Кількість осіб */}
+                    <div>
+                      <label className="block text-xs font-bold text-stone-900 uppercase tracking-wider mb-1.5">
+                        Кількість осіб
+                      </label>
+                      <div className="flex items-center gap-3 bg-stone-50 border-2 border-stone-200 rounded-xl p-2 justify-between">
+                        <span className="text-sm font-bold text-stone-900 pl-2">
+                          {personsCount} {personsCount === 1 ? 'особа' : personsCount < 5 ? 'особи' : 'осіб'}
+                        </span>
+                        <div className="flex items-center gap-1">
+                          <button
+                            type="button"
+                            disabled={personsCount <= 1}
+                            onClick={() => setPersonsCount(p => Math.max(1, p - 1))}
+                            className="w-9 h-9 rounded-lg bg-stone-200 font-bold text-stone-800 hover:bg-stone-300 disabled:opacity-40 flex items-center justify-center text-lg"
+                          >
+                            -
+                          </button>
+                          <button
+                            type="button"
+                            disabled={personsCount >= freeSlots}
+                            onClick={() => setPersonsCount(p => Math.min(freeSlots, p + 1))}
+                            className="w-9 h-9 rounded-lg bg-stone-800 font-bold text-white hover:bg-stone-900 disabled:opacity-40 flex items-center justify-center text-lg"
+                          >
+                            +
+                          </button>
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* Ім'я */}
+                    <div>
+                      <label className="block text-xs font-bold text-stone-900 uppercase tracking-wider mb-1.5">
+                        {personsCount > 1 ? "Ім'я (основний контакт)" : "Як до вас звертатися?"}
+                      </label>
+                      <input
+                        type="text" 
+                        required 
+                        placeholder="Ваше ім'я"
+                        value={formData.name} 
+                        onChange={(e) => setFormData({ ...formData, name: e.target.value })}
+                        className="w-full bg-stone-50 border-2 border-stone-200 text-stone-900 font-semibold rounded-xl px-4 py-3 text-sm focus:outline-none focus:border-stone-800 focus:bg-white placeholder-stone-400"
+                      />
+                    </div>
+
+                    {/* Контакти */}
+                    <div className="p-4 bg-stone-100 rounded-2xl border border-stone-300">
+                      <p className="text-xs font-bold text-stone-900 mb-3 text-center">
+                        Вкажіть хоча б один контакт для зв'язку:
+                      </p>
+                      
+                      <div className="space-y-3">
+                        <div>
+                          <input
+                            type="tel" 
+                            placeholder="Телефон (напр. +380...)"
+                            value={formData.phone} 
+                            onChange={(e) => { setFormData({ ...formData, phone: e.target.value }); setContactError(false); }}
+                            className={`w-full bg-white border-2 ${contactError ? 'border-red-500' : 'border-stone-300'} text-stone-900 font-semibold rounded-xl px-3.5 py-2.5 text-sm focus:outline-none focus:border-stone-800 placeholder-stone-400`}
+                          />
+                        </div>
+
+                        <div className="flex items-center gap-2 my-1">
+                          <div className="w-full h-px bg-stone-300"></div>
+                          <span className="text-[11px] font-extrabold uppercase text-stone-500 tracking-wider">АБО</span>
+                          <div className="w-full h-px bg-stone-300"></div>
+                        </div>
+
+                        <div>
+                          <input
+                            type="text" 
+                            placeholder="Instagram (нікнейм)"
+                            value={formData.instagram} 
+                            onChange={(e) => { setFormData({ ...formData, instagram: e.target.value }); setContactError(false); }}
+                            className={`w-full bg-white border-2 ${contactError ? 'border-red-500' : 'border-stone-300'} text-stone-900 font-semibold rounded-xl px-3.5 py-2.5 text-sm focus:outline-none focus:border-stone-800 placeholder-stone-400`}
+                          />
+                        </div>
+                      </div>
+
+                      {contactError && (
+                        <p className="text-xs font-bold text-red-600 mt-2.5 text-center bg-red-50 p-2 rounded-lg border border-red-200">
+                          ⚠️ Будь ласка, вкажіть телефон або Instagram!
+                        </p>
+                      )}
+                    </div>
+
+                    {/* БЛОК НАГАДУВАННЯ */}
+                    <div className="bg-amber-50/60 border-2 border-amber-200 rounded-2xl p-4 space-y-3">
+                      <div className="flex items-center justify-between">
+                        <div className="flex items-center gap-2.5">
+                          <span className="text-xl">🔔</span>
+                          <div>
+                            <p className="text-xs font-bold text-stone-900">Нагадати про заняття?</p>
+                            <p className="text-[10px] font-medium text-stone-600">Надішлемо повідомлення перед початком</p>
+                          </div>
+                        </div>
+                        <input
+                          type="checkbox"
+                          checked={formData.needReminder}
+                          onChange={(e) => setFormData({ ...formData, needReminder: e.target.checked })}
+                          className="w-5 h-5 accent-amber-900 rounded cursor-pointer"
+                        />
+                      </div>
+
+                      {formData.needReminder && (
+                        <div className="flex gap-2 pt-2 border-t border-amber-200/80">
+                          <button
+                            type="button"
+                            onClick={() => setFormData({ ...formData, reminderTime: '3h' })}
+                            className={`flex-1 py-2 rounded-xl text-xs font-bold transition-all ${formData.reminderTime === '3h' ? 'bg-amber-900 text-white shadow-sm' : 'bg-white border border-amber-300 text-amber-950'}`}
+                          >
+                            За 3 години
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => setFormData({ ...formData, reminderTime: '1d' })}
+                            className={`flex-1 py-2 rounded-xl text-xs font-bold transition-all ${formData.reminderTime === '1d' ? 'bg-amber-900 text-white shadow-sm' : 'bg-white border border-amber-300 text-amber-950'}`}
+                          >
+                            За 1 день
+                          </button>
+                        </div>
+                      )}
+                    </div>
+
+                    <div className="pt-2">
+                      <button 
+                        type="submit" 
+                        className="w-full py-4 rounded-xl font-bold text-xs uppercase tracking-widest text-white bg-stone-900 hover:bg-stone-950 active:scale-[0.99] shadow-lg shadow-stone-900/30 transition-all"
+                      >
+                        Підтвердити {bookingModal.type === 'trial' ? 'пробне' : 'запис'} ({totalPrice}₴)
+                      </button>
+                    </div>
+                  </form>
+                </div>
+              </div>
+            );
+          })()}
+
+        </div>
+      );
+    }
+
+    ReactDOM.createRoot(document.getElementById('root')).render(<App />);
+  </script>
+</body>
+</html>
