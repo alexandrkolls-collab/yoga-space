@@ -126,9 +126,8 @@
       const [pinError, setPinError] = useState(false);
 
       const [formData, setFormData] = useState({ 
-        name: '', phone: '', instagram: '', needReminder: true, reminderTime: '3h'
+        lastName: '', name: '', phone: '', instagram: '', needReminder: true, reminderTime: '3h'
       });
-      const [personsCount, setPersonsCount] = useState(1);
       const [contactError, setContactError] = useState(false);
       const [userSearchQuery, setUserSearchQuery] = useState('');
 
@@ -228,7 +227,6 @@
         return { totalRevenue, totalPersons, totalBookings, chartData, maxChartValue };
       };
 
-      // ФУНКЦІЯ ОЧИЩЕННЯ БАЗИ
       const handleClearHistory = async () => {
         const pass = prompt('УВАГА! Це видалить абсолютно всі записи з бази без можливості відновлення.\n\nВведіть ПІН-код для підтвердження:');
         
@@ -240,7 +238,6 @@
         if (!confirm('Ви абсолютно впевнені? Цю дію неможливо скасувати!')) return;
 
         if (supabase && !SUPABASE_URL.includes('YOUR_SUPABASE_PROJECT')) {
-          // Видаляємо всі рядки, де id не пустий
           await supabase.from('bookings').delete().neq('id', '0');
         } 
         
@@ -260,17 +257,17 @@
           return;
         }
 
+        const fullName = `${formData.lastName.trim()} ${formData.name.trim()}`;
         const pricePerPerson = bookingModal.type === 'trial' ? 150 : 200;
-        const totalPrice = pricePerPerson * personsCount;
 
         const newBooking = {
           id: 'b_' + Date.now(),
           training_id: bookingModal.training.id,
-          name: formData.name,
+          name: fullName,
           phone: phoneClean,
           instagram: instaClean,
           type: bookingModal.type,
-          persons_count: personsCount,
+          persons_count: 1,
           need_reminder: formData.needReminder,
           reminder_time: formData.needReminder ? formData.reminderTime : null
         };
@@ -287,21 +284,19 @@
 
         const messageText = `🧘 <b>НОВИЙ ЗАПИС НА ЙОГУ!</b>\n\n` +
           `📅 <b>День:</b> ${bookingModal.training.day}, ${bookingModal.training.date}\n` +
-          `👤 <b>Ім'я:</b> ${formData.name}\n` +
-          `👥 <b>Кількість:</b> ${personsCount} осіб\n` +
+          `👤 <b>Клієнт:</b> ${fullName}\n` +
           `🎟️ <b>Тип:</b> ${bookingModal.type === 'trial' ? 'Пробне (150₴)' : 'Повторне (200₴)'}\n` +
-          `💰 <b>Сума:</b> ${totalPrice}₴\n\n` +
+          `💰 <b>Сума:</b> ${pricePerPerson}₴\n\n` +
           `📞 <b>Телефон:</b> ${phoneClean || 'Не вказано'}\n` +
           `📸 <b>Instagram:</b> ${instaClean ? '@' + instaClean.replace('@', '') : 'Не вказано'}\n` +
           `🔔 <b>Нагадування:</b> ${formData.needReminder ? (formData.reminderTime === '1d' ? 'За 1 день' : 'За 3 години') : 'Ні'}`;
 
         sendTelegramNotification(messageText);
         
-        setFormData({ name: '', phone: '', instagram: '', needReminder: true, reminderTime: '3h' });
-        setPersonsCount(1);
+        setFormData({ lastName: '', name: '', phone: '', instagram: '', needReminder: true, reminderTime: '3h' });
         setBookingModal(null);
         setContactError(false);
-        alert(`Дякуємо! Ви успішно записані (${personsCount} осіб) 🙏`);
+        alert(`Дякуємо! Ви успішно записані 🙏`);
       };
 
       const handleCancelBooking = async (bookingId) => {
@@ -322,7 +317,7 @@
         if (cancelledBooking && trainingInfo) {
           const cancelMessage = `❌ <b>СКАСУВАННЯ ЗАПИСУ!</b>\n\n` +
             `📅 <b>День:</b> ${trainingInfo.day}, ${trainingInfo.date}\n` +
-            `👤 <b>Клієнт:</b> ${cancelledBooking.name} (${cancelledBooking.persons_count || 1} осіб)\n` +
+            `👤 <b>Клієнт:</b> ${cancelledBooking.name}\n` +
             `📞 <b>Контакт:</b> ${cancelledBooking.phone || '@' + cancelledBooking.instagram}`;
           sendTelegramNotification(cancelMessage);
         }
@@ -344,7 +339,7 @@
         }
 
         const rescheduleMessage = `🔄 <b>ПЕРЕНОС ЗАПИСУ!</b>\n\n` +
-          `👤 <b>Клієнт:</b> ${booking.name} (${booking.persons_count || 1} осіб)\n` +
+          `👤 <b>Клієнт:</b> ${booking.name}\n` +
           `❌ <b>З дати:</b> ${oldTraining?.day}, ${oldTraining?.date}\n` +
           `✅ <b>На дату:</b> ${newTraining?.day}, ${newTraining?.date}\n` +
           `📞 <b>Контакт:</b> ${booking.phone || '@' + booking.instagram}`;
@@ -476,7 +471,7 @@
                         <div className="grid grid-cols-2 gap-2 mt-2">
                           <button
                             disabled={isFull}
-                            onClick={() => { setPersonsCount(1); setBookingModal({ training: t, type: 'trial' }); }}
+                            onClick={() => { setBookingModal({ training: t, type: 'trial' }); }}
                             className={`py-3 px-2 rounded-xl text-xs font-bold uppercase tracking-wider transition-all text-center ${
                               isFull 
                                 ? 'bg-stone-100 text-stone-400 border border-stone-200 cursor-not-allowed' 
@@ -488,7 +483,7 @@
 
                           <button
                             disabled={isFull}
-                            onClick={() => { setPersonsCount(1); setBookingModal({ training: t, type: 'regular' }); }}
+                            onClick={() => { setBookingModal({ training: t, type: 'regular' }); }}
                             className={`py-3 px-2 rounded-xl text-xs font-bold uppercase tracking-wider transition-all text-center shadow-sm ${
                               isFull 
                                 ? 'bg-stone-100 text-stone-400 border border-stone-200 cursor-not-allowed' 
@@ -566,9 +561,6 @@
                                 <span className="text-xs font-bold text-amber-900 uppercase">{training.day} • {training.date}</span>
                                 <h4 className="font-bold text-stone-900 text-base">{b.name}</h4>
                               </div>
-                              <span className="text-xs font-bold bg-stone-100 text-stone-800 px-2.5 py-1 rounded-lg">
-                                👥 {b.persons_count || 1} осіб
-                              </span>
                             </div>
 
                             {b.need_reminder && (
@@ -682,12 +674,6 @@
                                     <div className="flex items-center gap-1.5 flex-wrap">
                                       <span className="text-xs font-bold text-stone-400">{idx + 1}.</span>
                                       <p className="font-bold text-sm text-stone-900">{b.name}</p>
-                                      
-                                      {(b.persons_count || 1) > 1 && (
-                                        <span className="text-[10px] font-bold px-2 py-0.5 rounded-md bg-stone-800 text-white">
-                                          👥 {b.persons_count} осіб
-                                        </span>
-                                      )}
 
                                       <span className={`text-[10px] font-bold px-2 py-0.5 rounded-md uppercase ${b.type === 'trial' ? 'bg-amber-100 text-amber-900 border border-amber-300' : 'bg-stone-200 text-stone-800'}`}>
                                         {b.type === 'trial' ? 'Пробне' : 'Повторне'}
@@ -781,8 +767,7 @@
                                       <p className="text-[10px] text-stone-600 mt-0.5">{b.phone || `@${b.instagram}`}</p>
                                     </div>
                                     <div className="text-right">
-                                      <p className="text-xs font-bold text-stone-800">{b.persons_count || 1} ос.</p>
-                                      <p className={`text-[9px] font-bold px-1.5 py-0.5 rounded mt-1 inline-block ${b.type === 'trial' ? 'bg-amber-100 text-amber-900' : 'bg-stone-200 text-stone-800'}`}>
+                                      <p className={`text-[9px] font-bold px-1.5 py-0.5 rounded inline-block ${b.type === 'trial' ? 'bg-amber-100 text-amber-900' : 'bg-stone-200 text-stone-800'}`}>
                                         {b.type === 'trial' ? '150₴' : '200₴'}
                                       </p>
                                     </div>
@@ -832,7 +817,7 @@
                   {trainings.map(t => {
                     const freeSlots = t.maxCapacity - getBookedCount(t.id);
                     const isCurrent = t.id === rescheduleModal.currentTrainingId;
-                    const canFit = freeSlots >= (rescheduleModal.booking.persons_count || 1);
+                    const canFit = freeSlots >= 1;
 
                     return (
                       <button
@@ -870,9 +855,7 @@
           )}
 
           {bookingModal && (() => {
-            const freeSlots = bookingModal.training.maxCapacity - getBookedCount(bookingModal.training.id);
             const pricePerPerson = bookingModal.type === 'trial' ? 150 : 200;
-            const totalPrice = pricePerPerson * personsCount;
 
             return (
               <div className="fixed inset-0 bg-stone-950/75 backdrop-blur-sm flex items-end sm:items-center justify-center p-0 sm:p-4 z-50">
@@ -897,47 +880,34 @@
 
                   <form onSubmit={handleBooking} className="space-y-4">
                     
-                    <div>
-                      <label className="block text-xs font-bold text-stone-900 uppercase tracking-wider mb-1.5">
-                        Кількість осіб
-                      </label>
-                      <div className="flex items-center gap-3 bg-stone-50 border-2 border-stone-200 rounded-xl p-2 justify-between">
-                        <span className="text-sm font-bold text-stone-900 pl-2">
-                          {personsCount} {personsCount === 1 ? 'особа' : personsCount < 5 ? 'особи' : 'осіб'}
-                        </span>
-                        <div className="flex items-center gap-1">
-                          <button
-                            type="button"
-                            disabled={personsCount <= 1}
-                            onClick={() => setPersonsCount(p => Math.max(1, p - 1))}
-                            className="w-9 h-9 rounded-lg bg-stone-200 font-bold text-stone-800 hover:bg-stone-300 disabled:opacity-40 flex items-center justify-center text-lg"
-                          >
-                            -
-                          </button>
-                          <button
-                            type="button"
-                            disabled={personsCount >= freeSlots}
-                            onClick={() => setPersonsCount(p => Math.min(freeSlots, p + 1))}
-                            className="w-9 h-9 rounded-lg bg-stone-800 font-bold text-white hover:bg-stone-900 disabled:opacity-40 flex items-center justify-center text-lg"
-                          >
-                            +
-                          </button>
-                        </div>
+                    {/* Поля Прізвище та Ім'я */}
+                    <div className="grid grid-cols-2 gap-2">
+                      <div>
+                        <label className="block text-xs font-bold text-stone-900 uppercase tracking-wider mb-1.5">
+                          Прізвище
+                        </label>
+                        <input
+                          type="text" 
+                          required 
+                          placeholder="Прізвище"
+                          value={formData.lastName} 
+                          onChange={(e) => setFormData({ ...formData, lastName: e.target.value })}
+                          className="w-full bg-stone-50 border-2 border-stone-200 text-stone-900 font-semibold rounded-xl px-3 py-3 text-sm focus:outline-none focus:border-stone-800 focus:bg-white placeholder-stone-400"
+                        />
                       </div>
-                    </div>
-
-                    <div>
-                      <label className="block text-xs font-bold text-stone-900 uppercase tracking-wider mb-1.5">
-                        {personsCount > 1 ? "Ім'я (основний контакт)" : "Як до вас звертатися?"}
-                      </label>
-                      <input
-                        type="text" 
-                        required 
-                        placeholder="Ваше ім'я"
-                        value={formData.name} 
-                        onChange={(e) => setFormData({ ...formData, name: e.target.value })}
-                        className="w-full bg-stone-50 border-2 border-stone-200 text-stone-900 font-semibold rounded-xl px-4 py-3 text-sm focus:outline-none focus:border-stone-800 focus:bg-white placeholder-stone-400"
-                      />
+                      <div>
+                        <label className="block text-xs font-bold text-stone-900 uppercase tracking-wider mb-1.5">
+                          Ім'я
+                        </label>
+                        <input
+                          type="text" 
+                          required 
+                          placeholder="Ім'я"
+                          value={formData.name} 
+                          onChange={(e) => setFormData({ ...formData, name: e.target.value })}
+                          className="w-full bg-stone-50 border-2 border-stone-200 text-stone-900 font-semibold rounded-xl px-3 py-3 text-sm focus:outline-none focus:border-stone-800 focus:bg-white placeholder-stone-400"
+                        />
+                      </div>
                     </div>
 
                     <div className="p-4 bg-stone-100 rounded-2xl border border-stone-300">
@@ -1022,7 +992,7 @@
                         type="submit" 
                         className="w-full py-4 rounded-xl font-bold text-xs uppercase tracking-widest text-white bg-stone-900 hover:bg-stone-950 active:scale-[0.99] shadow-lg shadow-stone-900/30 transition-all"
                       >
-                        Підтвердити {bookingModal.type === 'trial' ? 'пробне' : 'запис'} ({totalPrice}₴)
+                        Підтвердити {bookingModal.type === 'trial' ? 'пробне' : 'запис'} ({pricePerPerson}₴)
                       </button>
                     </div>
                   </form>
