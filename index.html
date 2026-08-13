@@ -22,13 +22,13 @@
     .font-serif-title {
       font-family: 'Playfair Display', serif;
     }
-    /* Сховати скроллбар для графіка, але залишити прокрутку */
+    /* Сховати скроллбар для графіка */
     .no-scrollbar::-webkit-scrollbar {
       display: none;
     }
     .no-scrollbar {
-      -ms-overflow-style: none;  /* IE and Edge */
-      scrollbar-width: none;  /* Firefox */
+      -ms-overflow-style: none;
+      scrollbar-width: none;
     }
   </style>
 </head>
@@ -49,7 +49,7 @@
     const TELEGRAM_CHAT_ID = '724872162';
 
     const SUPABASE_URL = 'https://fbmkawjfoqhbcblitoma.supabase.co';
-    const SUPABASE_ANON_KEY = 'sb_publishable_JJv5HkOiwzCVsqTVrXU7Gg_l-vGJqD4';
+    const SUPABASE_ANON_KEY = 'YOUR_SUPABASE_ANON_KEY';
     const supabase = window.supabase ? window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY) : null;
 
     const TARGET_DAYS = [1, 3, 5];
@@ -112,11 +112,11 @@
 
     function App() {
       const [bookings, setBookings] = useState([]);
-      const [allBookings, setAllBookings] = useState([]); // Для історії та аналітики
+      const [allBookings, setAllBookings] = useState([]); 
       const [trainings, setTrainings] = useState([]);
       
       const [activeTab, setActiveTab] = useState('client'); 
-      const [adminTab, setAdminTab] = useState('groups'); // 'groups' | 'analytics'
+      const [adminTab, setAdminTab] = useState('groups'); 
       
       const [bookingModal, setBookingModal] = useState(null); 
       const [rescheduleModal, setRescheduleModal] = useState(null); 
@@ -197,7 +197,6 @@
           .reduce((sum, b) => sum + (b.persons_count || 1), 0);
       };
 
-      // ЛОГІКА ДЛЯ АНАЛІТИКИ
       const getAnalytics = () => {
         let totalRevenue = 0;
         let totalPersons = 0;
@@ -212,24 +211,43 @@
           totalPersons += pCount;
           totalRevenue += (price * pCount);
 
-          // Групування для графіка за датами тренувань
           const tId = b.training_id;
-          // Отримуємо "ММ-ДД" з ID (напр. "t_2026-08-17" -> "08-17")
           let shortDate = tId.startsWith('t_') ? tId.substring(7) : 'Старі';
           
           if (!chartDataMap[shortDate]) chartDataMap[shortDate] = 0;
           chartDataMap[shortDate] += pCount;
         });
 
-        // Формуємо масив для графіка і сортуємо по даті (алфавітно для ММ-ДД працює правильно)
         const chartData = Object.keys(chartDataMap)
           .map(k => ({ label: k, count: chartDataMap[k] }))
           .sort((a, b) => a.label.localeCompare(b.label))
-          .slice(-12); // Беремо останні 12 дат
+          .slice(-12); 
 
         const maxChartValue = Math.max(10, ...chartData.map(d => d.count));
 
         return { totalRevenue, totalPersons, totalBookings, chartData, maxChartValue };
+      };
+
+      // ФУНКЦІЯ ОЧИЩЕННЯ БАЗИ
+      const handleClearHistory = async () => {
+        const pass = prompt('УВАГА! Це видалить абсолютно всі записи з бази без можливості відновлення.\n\nВведіть ПІН-код для підтвердження:');
+        
+        if (pass !== ADMIN_PIN) {
+          if (pass !== null) alert('Невірний ПІН-код! Очищення скасовано.');
+          return;
+        }
+        
+        if (!confirm('Ви абсолютно впевнені? Цю дію неможливо скасувати!')) return;
+
+        if (supabase && !SUPABASE_URL.includes('YOUR_SUPABASE_PROJECT')) {
+          // Видаляємо всі рядки, де id не пустий
+          await supabase.from('bookings').delete().neq('id', '0');
+        } 
+        
+        setBookings([]);
+        setAllBookings([]);
+        localStorage.removeItem('yoga_baryshivka_db_bookings');
+        alert('Історію бази даних успішно очищено!');
       };
 
       const handleBooking = async (e) => {
@@ -289,7 +307,7 @@
       const handleCancelBooking = async (bookingId) => {
         if (!confirm('Ви дійсно бажаєте скасувати цей запис?')) return;
 
-        const cancelledBooking = bookings.find(b => b.id === bookingId);
+        const cancelledBooking = bookings.find(b => b.id === bookingId) || allBookings.find(b => b.id === bookingId);
         const trainingInfo = trainings.find(t => t.id === cancelledBooking?.training_id);
 
         if (supabase && !SUPABASE_URL.includes('YOUR_SUPABASE_PROJECT')) {
@@ -297,6 +315,7 @@
         } else {
           const updated = bookings.filter(b => b.id !== bookingId);
           setBookings(updated);
+          setAllBookings(allBookings.filter(b => b.id !== bookingId));
           localStorage.setItem('yoga_baryshivka_db_bookings', JSON.stringify(updated));
         }
 
@@ -383,6 +402,7 @@
 
           <main className="flex-1">
             
+            {/* ВІДКРИТА ЧАСТИНА ДЛЯ КЛІЄНТІВ */}
             {activeTab === 'client' && (
               <div className="space-y-6">
                 
@@ -416,26 +436,41 @@
                     const bookedCount = getBookedCount(t.id);
                     const freeSlots = t.maxCapacity - bookedCount;
                     const isFull = freeSlots <= 0;
+                    const fillPercentage = Math.min(100, (bookedCount / t.maxCapacity) * 100);
 
                     return (
                       <div key={t.id} className="bg-white border border-stone-300 rounded-2xl p-5 shadow-sm relative overflow-hidden">
                         <div className="absolute left-0 top-0 bottom-0 w-1.5 bg-stone-800"></div>
                         
-                        <div className="flex justify-between items-center mb-3">
+                        <div className="flex justify-between items-center mb-1">
                           <div>
                             <h3 className="font-serif-title text-2xl font-bold text-stone-900">{t.day}</h3>
-                            <p className="text-[11px] font-bold text-stone-400 uppercase tracking-wider">{t.date}</p>
+                            <p className="text-[11px] font-bold text-stone-400 uppercase tracking-wider mt-0.5">{t.date}</p>
                           </div>
                           <div className="text-right">
                             <span className="text-2xl font-bold text-stone-800">{t.time}</span>
                           </div>
                         </div>
 
-                        <div className="flex justify-between items-center text-xs mb-4 font-semibold">
-                          <span className="text-stone-600">Вільних килимків:</span>
-                          <span className={isFull ? "text-red-600 font-bold" : "text-stone-900 font-bold"}>
-                            {isFull ? 'Група заповнена' : `${freeSlots} з ${t.maxCapacity}`}
-                          </span>
+                        {/* НАОЧНИЙ ПРОГРЕС-БАР МІСЦЬ */}
+                        <div className="mt-4 mb-5 bg-stone-50 p-3 rounded-xl border border-stone-200">
+                          <div className="flex justify-between items-center text-xs mb-2 font-bold">
+                            <span className="text-stone-600 uppercase tracking-wide text-[10px]">Заповненість:</span>
+                            <span className={isFull ? "text-red-600" : (freeSlots <= 3 ? "text-amber-600" : "text-stone-900")}>
+                              {isFull ? 'Група заповнена' : `Вільних місць: ${freeSlots} з ${t.maxCapacity}`}
+                            </span>
+                          </div>
+                          
+                          <div className="w-full bg-stone-200 rounded-full h-2 overflow-hidden flex">
+                            <div 
+                              className={`h-full rounded-full transition-all duration-500 ${isFull ? 'bg-red-500' : (freeSlots <= 3 ? 'bg-amber-500' : 'bg-stone-800')}`} 
+                              style={{ width: `${fillPercentage}%` }}
+                            ></div>
+                          </div>
+                          
+                          {freeSlots > 0 && freeSlots <= 3 && (
+                            <p className="text-[10px] font-bold text-amber-600 mt-2 text-center animate-pulse">🔥 Залишилося мало місць, встигніть записатися!</p>
+                          )}
                         </div>
 
                         <div className="grid grid-cols-2 gap-2 mt-2">
@@ -475,7 +510,7 @@
               </div>
             )}
 
-            {/* --- МОЇ ЗАПИСИ --- */}
+            {/* --- ПОШУК СВОЇХ ЗАПИСІВ --- */}
             {activeTab === 'my-bookings' && (
               <div className="space-y-4">
                 <div className="bg-white p-5 rounded-2xl border border-stone-300 shadow-sm">
@@ -717,7 +752,6 @@
                               <div className="flex items-end gap-3 h-32 overflow-x-auto no-scrollbar pt-2 pb-1">
                                 {chartData.map((d, i) => (
                                   <div key={i} className="flex flex-col items-center justify-end h-full min-w-[32px] group relative">
-                                    {/* Підказка при натисканні/наведенні */}
                                     <div className="absolute -top-7 bg-stone-800 text-white text-[10px] font-bold px-2 py-1 rounded opacity-0 group-hover:opacity-100 transition-opacity whitespace-nowrap">
                                       {d.count} осіб
                                     </div>
@@ -756,6 +790,19 @@
                                 )
                               })}
                             </div>
+                            
+                            {/* КНОПКА ОЧИЩЕННЯ БАЗИ ДАНИХ */}
+                            <div className="mt-5 pt-4 border-t border-stone-200">
+                              <button 
+                                onClick={handleClearHistory}
+                                className="w-full py-3 bg-red-50 hover:bg-red-100 text-red-600 border border-red-200 rounded-xl text-xs font-bold uppercase tracking-wider transition-all"
+                              >
+                                ⚠️ Очистити всю історію
+                              </button>
+                              <p className="text-[9px] text-center text-stone-400 mt-2 leading-relaxed">
+                                Увага: Ця дія повністю видалить всі минулі та майбутні записи з бази даних без можливості відновлення.
+                              </p>
+                            </div>
                           </div>
 
                         </div>
@@ -768,7 +815,8 @@
             )}
           </main>
 
-          {/* МОДАЛКА ПЕРЕНОСУ */}
+          {/* МОДАЛКИ (Перенос та Створення) */}
+          
           {rescheduleModal && (
             <div className="fixed inset-0 bg-stone-950/75 backdrop-blur-sm flex items-end sm:items-center justify-center p-0 sm:p-4 z-50">
               <div className="bg-white w-full sm:max-w-md rounded-t-3xl sm:rounded-2xl p-6 shadow-2xl border border-stone-300">
@@ -821,7 +869,6 @@
             </div>
           )}
 
-          {/* МОДАЛКА СТВОРЕННЯ ЗАПИСУ */}
           {bookingModal && (() => {
             const freeSlots = bookingModal.training.maxCapacity - getBookedCount(bookingModal.training.id);
             const pricePerPerson = bookingModal.type === 'trial' ? 150 : 200;
