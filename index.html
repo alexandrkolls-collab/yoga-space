@@ -8,8 +8,7 @@
   <script src="https://unpkg.com/react@18/umd/react.development.js"></script>
   <script src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
   <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
-
-  <!-- Supabase JS Library -->
+  
   <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
   
   <link href="https://fonts.googleapis.com/css2?family=Playfair+Display:ital,wght@0,600;0,700;1,400&family=Montserrat:wght@400;500;600;700&display=swap" rel="stylesheet">
@@ -41,18 +40,62 @@
     const TELEGRAM_BOT_TOKEN = '8681415848:AAE4GQINEMMcU5usUAItyxfz766iROh4vcE';
     const TELEGRAM_CHAT_ID = '724872162';
 
-    // ВСТАВТЕ СВОЇ ДАНІ З SUPABASE ТУТ:
     const SUPABASE_URL = 'https://fbmkawjfoqhbcblitoma.supabase.co';
     const SUPABASE_ANON_KEY = 'sb_publishable_JJv5HkOiwzCVsqTVrXU7Gg_l-vGJqD4';
-
-    // Ініціалізація Supabase
     const supabase = window.supabase ? window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY) : null;
 
-    const INITIAL_TRAININGS = [
-      { id: 't1', day: 'Понеділок', date: 'Найближчий', time: '20:15', maxCapacity: 10 },
-      { id: 't2', day: 'Середа', date: 'Найближча', time: '20:15', maxCapacity: 10 },
-      { id: 't3', day: "П'ятниця", date: 'Найближча', time: '20:15', maxCapacity: 10 },
-    ];
+    // --- ЛОГІКА ДИНАМІЧНИХ ДАТ ---
+    // Дні тижня: 1 - Понеділок, 3 - Середа, 5 - П'ятниця
+    const TARGET_DAYS = [1, 3, 5];
+    const HOUR_START = 20;
+    const MINUTE_START = 15;
+
+    const getUpcomingTrainings = () => {
+      const now = new Date();
+      const trainings = [];
+
+      TARGET_DAYS.forEach(targetDay => {
+        let date = new Date(now);
+        const day = date.getDay();
+        
+        // Визначаємо різницю в днях до найближчого цільового дня
+        let diff = targetDay - day;
+        if (diff < 0) diff += 7; // Наступний тиждень
+        
+        // Якщо сьогодні цей день, перевіряємо, чи не пройшов вже час (20:15)
+        if (diff === 0) {
+          if (now.getHours() > HOUR_START || (now.getHours() === HOUR_START && now.getMinutes() >= MINUTE_START)) {
+            diff += 7; // Заняття вже пройшло, переносимо на наступний тиждень
+          }
+        }
+
+        date.setDate(date.getDate() + diff);
+        date.setHours(0, 0, 0, 0);
+
+        const dayName = targetDay === 1 ? 'Понеділок' : targetDay === 3 ? 'Середа' : "П'ятниця";
+        const formattedDate = date.toLocaleDateString('uk-UA', { day: 'numeric', month: 'long' });
+        // ID тепер унікальний для конкретної дати, напр. "t_2026-08-17"
+        const id = `t_${date.getFullYear()}-${String(date.getMonth()+1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
+
+        trainings.push({
+          id: id,
+          day: dayName,
+          date: formattedDate,
+          fullDate: date,
+          time: '20:15',
+          maxCapacity: 10
+        });
+      });
+
+      // Сортуємо заняття за найближчою датою
+      return trainings.sort((a, b) => a.fullDate - b.fullDate);
+    };
+
+
+    const normalizeContact = (str) => {
+      if (!str) return '';
+      return str.toLowerCase().replace(/[\s\+\-\(\)@]/g, '');
+    };
 
     const sendTelegramNotification = async (text) => {
       try {
@@ -68,6 +111,8 @@
 
     function App() {
       const [bookings, setBookings] = useState([]);
+      const [trainings, setTrainings] = useState([]);
+      
       const [activeTab, setActiveTab] = useState('client'); 
       const [bookingModal, setBookingModal] = useState(null); 
       const [rescheduleModal, setRescheduleModal] = useState(null); 
@@ -83,8 +128,10 @@
       const [contactError, setContactError] = useState(false);
       const [userSearchQuery, setUserSearchQuery] = useState('');
 
-      // Завантаження записів з Supabase та підписка на Realtime
       useEffect(() => {
+        // Оновлюємо розклад при завантаженні
+        setTrainings(getUpcomingTrainings());
+
         fetchBookings();
 
         if (supabase) {
@@ -106,7 +153,14 @@
           return;
         }
 
-        const { data, error } = await supabase.from('bookings').select('*');
+        // Отримуємо записи ТІЛЬКИ для актуальних (неминулих) дат
+        const currentTrainingIds = getUpcomingTrainings().map(t => t.id);
+        
+        const { data, error } = await supabase
+          .from('bookings')
+          .select('*')
+          .in('training_id', currentTrainingIds);
+
         if (!error && data) {
           setBookings(data);
           localStorage.setItem('yoga_baryshivka_db_bookings', JSON.stringify(data));
@@ -155,7 +209,7 @@
         localStorage.setItem('yoga_user_contact', phoneClean || instaClean);
 
         const messageText = `🧘 <b>НОВИЙ ЗАПИС НА ЙОГУ!</b>\n\n` +
-          `📅 <b>День:</b> ${bookingModal.training.day} (${bookingModal.training.time})\n` +
+          `📅 <b>День:</b> ${bookingModal.training.day}, ${bookingModal.training.date}\n` +
           `👤 <b>Ім'я:</b> ${formData.name}\n` +
           `👥 <b>Кількість:</b> ${personsCount} осіб\n` +
           `🎟️ <b>Тип:</b> ${bookingModal.type === 'trial' ? 'Пробне (150₴)' : 'Повторне (200₴)'}\n` +
@@ -177,7 +231,7 @@
         if (!confirm('Ви дійсно бажаєте скасувати цей запис?')) return;
 
         const cancelledBooking = bookings.find(b => b.id === bookingId);
-        const trainingInfo = INITIAL_TRAININGS.find(t => t.id === cancelledBooking?.training_id);
+        const trainingInfo = trainings.find(t => t.id === cancelledBooking?.training_id);
 
         if (supabase && !SUPABASE_URL.includes('YOUR_SUPABASE_PROJECT')) {
           await supabase.from('bookings').delete().eq('id', bookingId);
@@ -189,7 +243,7 @@
 
         if (cancelledBooking && trainingInfo) {
           const cancelMessage = `❌ <b>СКАСУВАННЯ ЗАПИСУ!</b>\n\n` +
-            `📅 <b>День:</b> ${trainingInfo.day} (${trainingInfo.time})\n` +
+            `📅 <b>День:</b> ${trainingInfo.day}, ${trainingInfo.date}\n` +
             `👤 <b>Клієнт:</b> ${cancelledBooking.name} (${cancelledBooking.persons_count || 1} осіб)\n` +
             `📞 <b>Контакт:</b> ${cancelledBooking.phone || '@' + cancelledBooking.instagram}`;
           sendTelegramNotification(cancelMessage);
@@ -200,8 +254,8 @@
         const { currentTrainingId, booking } = rescheduleModal;
         if (currentTrainingId === targetTrainingId) return;
 
-        const oldTraining = INITIAL_TRAININGS.find(t => t.id === currentTrainingId);
-        const newTraining = INITIAL_TRAININGS.find(t => t.id === targetTrainingId);
+        const oldTraining = trainings.find(t => t.id === currentTrainingId);
+        const newTraining = trainings.find(t => t.id === targetTrainingId);
 
         if (supabase && !SUPABASE_URL.includes('YOUR_SUPABASE_PROJECT')) {
           await supabase.from('bookings').update({ training_id: targetTrainingId }).eq('id', booking.id);
@@ -213,8 +267,8 @@
 
         const rescheduleMessage = `🔄 <b>ПЕРЕНОС ЗАПИСУ!</b>\n\n` +
           `👤 <b>Клієнт:</b> ${booking.name} (${booking.persons_count || 1} осіб)\n` +
-          `❌ <b>З дати:</b> ${oldTraining.day} (${oldTraining.time})\n` +
-          `✅ <b>На дату:</b> ${newTraining.day} (${newTraining.time})\n` +
+          `❌ <b>З дати:</b> ${oldTraining?.day}, ${oldTraining?.date}\n` +
+          `✅ <b>На дату:</b> ${newTraining?.day}, ${newTraining?.date}\n` +
           `📞 <b>Контакт:</b> ${booking.phone || '@' + booking.instagram}`;
 
         sendTelegramNotification(rescheduleMessage);
@@ -299,7 +353,7 @@
                 <div className="space-y-4">
                   <h2 className="text-center font-serif-title text-2xl font-bold text-stone-900 mb-2">Розклад та Запис</h2>
                   
-                  {INITIAL_TRAININGS.map(t => {
+                  {trainings.map(t => {
                     const bookedCount = getBookedCount(t.id);
                     const freeSlots = t.maxCapacity - bookedCount;
                     const isFull = freeSlots <= 0;
@@ -311,7 +365,7 @@
                         <div className="flex justify-between items-center mb-3">
                           <div>
                             <h3 className="font-serif-title text-2xl font-bold text-stone-900">{t.day}</h3>
-                            <p className="text-xs font-bold text-stone-400 uppercase tracking-wider">{t.date}</p>
+                            <p className="text-[11px] font-bold text-stone-400 uppercase tracking-wider">{t.date}</p>
                           </div>
                           <div className="text-right">
                             <span className="text-2xl font-bold text-stone-800">{t.time}</span>
@@ -366,11 +420,11 @@
               <div className="space-y-4">
                 <div className="bg-white p-5 rounded-2xl border border-stone-300 shadow-sm">
                   <h3 className="font-serif-title text-xl font-bold text-stone-900 mb-1">Пошук ваших записів</h3>
-                  <p className="text-xs text-stone-600 mb-3">Введіть ваш телефон або Instagram, щоб керувати записами:</p>
+                  <p className="text-xs text-stone-600 mb-3">Введіть ваш повний телефон або нікнейм Instagram:</p>
                   
                   <input
                     type="text"
-                    placeholder="Телефон або Instagram..."
+                    placeholder="Напр. +380971234567 або username"
                     value={userSearchQuery}
                     onChange={(e) => setUserSearchQuery(e.target.value)}
                     className="w-full bg-stone-50 border-2 border-stone-200 text-stone-900 font-semibold rounded-xl px-4 py-3 text-sm focus:outline-none focus:border-stone-800"
@@ -380,15 +434,25 @@
                 <h3 className="font-serif-title text-lg font-bold text-stone-900 mt-6">Знайдені записи:</h3>
 
                 {(() => {
-                  const query = userSearchQuery.trim().toLowerCase();
-                  if (!query) {
-                    return <p className="text-xs text-stone-500 text-center py-6 italic">Введіть ваші дані у полі вище.</p>;
+                  const queryNorm = normalizeContact(userSearchQuery);
+
+                  if (queryNorm.length < 5) {
+                    return <p className="text-xs text-stone-500 text-center py-6 italic">Введіть повний номер телефону або Instagram (мінімум 5 символів).</p>;
                   }
 
-                  const foundBookings = bookings.filter(b => 
-                    (b.phone && b.phone.toLowerCase().includes(query)) ||
-                    (b.instagram && b.instagram.toLowerCase().includes(query))
-                  );
+                  const foundBookings = bookings.filter(b => {
+                    const phoneNorm = normalizeContact(b.phone);
+                    const instaNorm = normalizeContact(b.instagram);
+
+                    const matchPhone = phoneNorm && (
+                      phoneNorm === queryNorm || 
+                      (phoneNorm.endsWith(queryNorm) && queryNorm.length >= 9) ||
+                      (queryNorm.endsWith(phoneNorm) && phoneNorm.length >= 9)
+                    );
+                    const matchInsta = instaNorm && (instaNorm === queryNorm);
+
+                    return matchPhone || matchInsta;
+                  });
 
                   if (foundBookings.length === 0) {
                     return <p className="text-xs text-stone-500 text-center py-6 italic">Записів за цим контактом не знайдено.</p>;
@@ -397,12 +461,15 @@
                   return (
                     <div className="space-y-3">
                       {foundBookings.map(b => {
-                        const training = INITIAL_TRAININGS.find(t => t.id === b.training_id);
+                        const training = trainings.find(t => t.id === b.training_id);
+                        // Якщо запис на стару дату, яка вже не в розкладі
+                        if (!training) return null;
+
                         return (
                           <div key={b.id} className="bg-white border border-stone-300 rounded-2xl p-4 shadow-sm">
                             <div className="flex justify-between items-start mb-2 pb-2 border-b border-stone-200">
                               <div>
-                                <span className="text-xs font-bold text-amber-900 uppercase">{training?.day} • {training?.time}</span>
+                                <span className="text-xs font-bold text-amber-900 uppercase">{training.day} • {training.date}</span>
                                 <h4 className="font-bold text-stone-900 text-base">{b.name}</h4>
                               </div>
                               <span className="text-xs font-bold bg-stone-100 text-stone-800 px-2.5 py-1 rounded-lg">
@@ -478,7 +545,7 @@
                       </button>
                     </div>
 
-                    {INITIAL_TRAININGS.map(t => {
+                    {trainings.map(t => {
                       const groupBookings = bookings.filter(b => b.training_id === t.id);
                       const bookedCount = getBookedCount(t.id);
 
@@ -487,7 +554,8 @@
                           <div className="flex justify-between items-center mb-3 pb-2 border-b border-stone-200">
                             <div>
                               <h3 className="font-bold text-stone-900">{t.day} ({t.time})</h3>
-                              <p className="text-xs font-medium text-stone-600">Зайнято місць: {bookedCount} з {t.maxCapacity}</p>
+                              <p className="text-[11px] font-bold text-stone-500 uppercase">{t.date}</p>
+                              <p className="text-xs font-medium text-amber-900 mt-1">Зайнято місць: {bookedCount} з {t.maxCapacity}</p>
                             </div>
                           </div>
 
@@ -555,7 +623,7 @@
                 </div>
 
                 <div className="space-y-2.5 my-4">
-                  {INITIAL_TRAININGS.map(t => {
+                  {trainings.map(t => {
                     const freeSlots = t.maxCapacity - getBookedCount(t.id);
                     const isCurrent = t.id === rescheduleModal.currentTrainingId;
                     const canFit = freeSlots >= (rescheduleModal.booking.persons_count || 1);
@@ -576,7 +644,7 @@
                         <div>
                           <span className="text-sm block">{t.day} ({t.time})</span>
                           <span className="text-[10px] font-normal text-stone-500">
-                            {isCurrent ? 'Поточна дата' : `Вільних місць: ${freeSlots}`}
+                            {isCurrent ? 'Поточна дата' : `Вільних місць: ${freeSlots} • ${t.date}`}
                           </span>
                         </div>
                         {!isCurrent && canFit && <span className="text-amber-900">Обрати ➔</span>}
@@ -610,7 +678,7 @@
                         {bookingModal.type === 'trial' ? 'Пробне заняття' : 'Запис на йогу'}
                       </h3>
                       <p className="text-xs font-bold text-stone-500 uppercase tracking-wider mt-1">
-                        {bookingModal.training.day} • {bookingModal.training.time}
+                        {bookingModal.training.day} • {bookingModal.training.date}
                       </p>
                     </div>
                     <button 
