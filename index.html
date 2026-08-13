@@ -35,12 +35,31 @@
     const { useState, useEffect } = React;
 
     const ADMIN_PIN = '1234'; 
+    const TELEGRAM_BOT_TOKEN = '8681415848:AAE4GQINEMMcU5usUAItyxfz766iROh4vcE';
+    const TELEGRAM_CHAT_ID = '724872162';
 
     const INITIAL_TRAININGS = [
       { id: 't1', day: 'Понеділок', date: 'Найближчий', time: '20:15', maxCapacity: 10, bookings: [] },
       { id: 't2', day: 'Середа', date: 'Найближча', time: '20:15', maxCapacity: 10, bookings: [] },
       { id: 't3', day: "П'ятниця", date: 'Найближча', time: '20:15', maxCapacity: 10, bookings: [] },
     ];
+
+    // Функція відправки повідомлення в Telegram
+    const sendTelegramNotification = async (text) => {
+      try {
+        await fetch(`https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            chat_id: TELEGRAM_CHAT_ID,
+            text: text,
+            parse_mode: 'HTML'
+          })
+        });
+      } catch (error) {
+        console.error('Помилка відправки в Telegram:', error);
+      }
+    };
 
     function App() {
       const [trainings, setTrainings] = useState(() => {
@@ -76,6 +95,7 @@
         return training.bookings.reduce((sum, b) => sum + (b.personsCount || 1), 0);
       };
 
+      // Створення нової записи
       const handleBooking = (e) => {
         e.preventDefault();
         const phoneClean = formData.phone.trim();
@@ -85,6 +105,9 @@
           setContactError(true);
           return;
         }
+
+        const pricePerPerson = bookingModal.type === 'trial' ? 150 : 200;
+        const totalPrice = pricePerPerson * personsCount;
 
         const newBooking = {
           id: 'b_' + Date.now(),
@@ -106,6 +129,19 @@
         }));
 
         localStorage.setItem('yoga_user_contact', phoneClean || instaClean);
+
+        // Відправка сповіщення в Telegram
+        const messageText = `🧘 <b>НОВИЙ ЗАПИС НА ЙОГУ!</b>\n\n` +
+          `📅 <b>День:</b> ${bookingModal.training.day} (${bookingModal.training.time})\n` +
+          `👤 <b>Ім'я:</b> ${formData.name}\n` +
+          `👥 <b>Кількість:</b> ${personsCount} осіб\n` +
+          `🎟️ <b>Тип:</b> ${bookingModal.type === 'trial' ? 'Пробне (150₴)' : 'Повторне (200₴)'}\n` +
+          `💰 <b>Сума:</b> ${totalPrice}₴\n\n` +
+          `📞 <b>Телефон:</b> ${phoneClean || 'Не вказано'}\n` +
+          `📸 <b>Instagram:</b> ${instaClean ? '@' + instaClean.replace('@', '') : 'Не вказано'}\n` +
+          `🔔 <b>Нагадування:</b> ${formData.needReminder ? (formData.reminderTime === '1d' ? 'За 1 день' : 'За 3 години') : 'Ні'}`;
+
+        sendTelegramNotification(messageText);
         
         setFormData({ name: '', phone: '', instagram: '', needReminder: true, reminderTime: '3h' });
         setPersonsCount(1);
@@ -114,19 +150,38 @@
         alert(`Дякуємо! Ви успішно записані (${personsCount} осіб) 🙏`);
       };
 
+      // Скасування записи
       const handleCancelBooking = (trainingId, bookingId) => {
         if (!confirm('Ви дійсно бажаєте скасувати цей запис?')) return;
+        
+        let cancelledBooking = null;
+        let trainingInfo = null;
+
         setTrainings(prev => prev.map(t => {
           if (t.id === trainingId) {
+            cancelledBooking = t.bookings.find(b => b.id === bookingId);
+            trainingInfo = t;
             return { ...t, bookings: t.bookings.filter(b => b.id !== bookingId) };
           }
           return t;
         }));
+
+        if (cancelledBooking && trainingInfo) {
+          const cancelMessage = `❌ <b>СКАСУВАННЯ ЗАПИСУ!</b>\n\n` +
+            `📅 <b>День:</b> ${trainingInfo.day} (${trainingInfo.time})\n` +
+            `👤 <b>Клієнт:</b> ${cancelledBooking.name} (${cancelledBooking.personsCount || 1} осіб)\n` +
+            `📞 <b>Контакт:</b> ${cancelledBooking.phone || '@' + cancelledBooking.instagram}`;
+          sendTelegramNotification(cancelMessage);
+        }
       };
 
+      // Перенос записи
       const handleReschedule = (targetTrainingId) => {
         const { currentTrainingId, booking } = rescheduleModal;
         if (currentTrainingId === targetTrainingId) return;
+
+        let oldTraining = trainings.find(t => t.id === currentTrainingId);
+        let newTraining = trainings.find(t => t.id === targetTrainingId);
 
         setTrainings(prev => prev.map(t => {
           if (t.id === currentTrainingId) {
@@ -137,6 +192,14 @@
           }
           return t;
         }));
+
+        const rescheduleMessage = `🔄 <b>ПЕРЕНОС ЗАПИСУ!</b>\n\n` +
+          `👤 <b>Клієнт:</b> ${booking.name} (${booking.personsCount || 1} осіб)\n` +
+          `❌ <b>З дати:</b> ${oldTraining.day} (${oldTraining.time})\n` +
+          `✅ <b>На дату:</b> ${newTraining.day} (${newTraining.time})\n` +
+          `📞 <b>Контакт:</b> ${booking.phone || '@' + booking.instagram}`;
+
+        sendTelegramNotification(rescheduleMessage);
 
         setRescheduleModal(null);
         alert('Запис успішно перенесено!');
