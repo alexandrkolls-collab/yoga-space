@@ -22,6 +22,14 @@
     .font-serif-title {
       font-family: 'Playfair Display', serif;
     }
+    /* Сховати скроллбар для графіка, але залишити прокрутку */
+    .no-scrollbar::-webkit-scrollbar {
+      display: none;
+    }
+    .no-scrollbar {
+      -ms-overflow-style: none;  /* IE and Edge */
+      scrollbar-width: none;  /* Firefox */
+    }
   </style>
 </head>
 <body class="min-h-screen relative overflow-x-hidden">
@@ -41,11 +49,9 @@
     const TELEGRAM_CHAT_ID = '724872162';
 
     const SUPABASE_URL = 'https://fbmkawjfoqhbcblitoma.supabase.co';
-    const SUPABASE_ANON_KEY = 'sb_publishable_JJv5HkOiwzCVsqTVrXU7Gg_l-vGJqD4';
+    const SUPABASE_ANON_KEY = 'YOUR_SUPABASE_ANON_KEY';
     const supabase = window.supabase ? window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY) : null;
 
-    // --- ЛОГІКА ДИНАМІЧНИХ ДАТ ---
-    // Дні тижня: 1 - Понеділок, 3 - Середа, 5 - П'ятниця
     const TARGET_DAYS = [1, 3, 5];
     const HOUR_START = 20;
     const MINUTE_START = 15;
@@ -58,14 +64,12 @@
         let date = new Date(now);
         const day = date.getDay();
         
-        // Визначаємо різницю в днях до найближчого цільового дня
         let diff = targetDay - day;
-        if (diff < 0) diff += 7; // Наступний тиждень
+        if (diff < 0) diff += 7; 
         
-        // Якщо сьогодні цей день, перевіряємо, чи не пройшов вже час (20:15)
         if (diff === 0) {
           if (now.getHours() > HOUR_START || (now.getHours() === HOUR_START && now.getMinutes() >= MINUTE_START)) {
-            diff += 7; // Заняття вже пройшло, переносимо на наступний тиждень
+            diff += 7;
           }
         }
 
@@ -74,7 +78,6 @@
 
         const dayName = targetDay === 1 ? 'Понеділок' : targetDay === 3 ? 'Середа' : "П'ятниця";
         const formattedDate = date.toLocaleDateString('uk-UA', { day: 'numeric', month: 'long' });
-        // ID тепер унікальний для конкретної дати, напр. "t_2026-08-17"
         const id = `t_${date.getFullYear()}-${String(date.getMonth()+1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
 
         trainings.push({
@@ -87,10 +90,8 @@
         });
       });
 
-      // Сортуємо заняття за найближчою датою
       return trainings.sort((a, b) => a.fullDate - b.fullDate);
     };
-
 
     const normalizeContact = (str) => {
       if (!str) return '';
@@ -111,9 +112,12 @@
 
     function App() {
       const [bookings, setBookings] = useState([]);
+      const [allBookings, setAllBookings] = useState([]); // Для історії та аналітики
       const [trainings, setTrainings] = useState([]);
       
       const [activeTab, setActiveTab] = useState('client'); 
+      const [adminTab, setAdminTab] = useState('groups'); // 'groups' | 'analytics'
+      
       const [bookingModal, setBookingModal] = useState(null); 
       const [rescheduleModal, setRescheduleModal] = useState(null); 
       
@@ -129,9 +133,7 @@
       const [userSearchQuery, setUserSearchQuery] = useState('');
 
       useEffect(() => {
-        // Оновлюємо розклад при завантаженні
         setTrainings(getUpcomingTrainings());
-
         fetchBookings();
 
         if (supabase) {
@@ -139,12 +141,19 @@
             .channel('public:bookings')
             .on('postgres_changes', { event: '*', schema: 'public', table: 'bookings' }, () => {
               fetchBookings();
+              if (isAdminLoggedIn) fetchAllBookings();
             })
             .subscribe();
 
           return () => supabase.removeChannel(channel);
         }
       }, []);
+
+      useEffect(() => {
+        if (isAdminLoggedIn) {
+          fetchAllBookings();
+        }
+      }, [isAdminLoggedIn]);
 
       const fetchBookings = async () => {
         if (!supabase || SUPABASE_URL.includes('YOUR_SUPABASE_PROJECT')) {
@@ -153,9 +162,7 @@
           return;
         }
 
-        // Отримуємо записи ТІЛЬКИ для актуальних (неминулих) дат
         const currentTrainingIds = getUpcomingTrainings().map(t => t.id);
-        
         const { data, error } = await supabase
           .from('bookings')
           .select('*')
@@ -167,10 +174,62 @@
         }
       };
 
+      const fetchAllBookings = async () => {
+        if (!supabase || SUPABASE_URL.includes('YOUR_SUPABASE_PROJECT')) {
+          const local = localStorage.getItem('yoga_baryshivka_db_bookings');
+          setAllBookings(local ? JSON.parse(local) : []);
+          return;
+        }
+
+        const { data, error } = await supabase
+          .from('bookings')
+          .select('*')
+          .order('created_at', { ascending: false });
+
+        if (!error && data) {
+          setAllBookings(data);
+        }
+      };
+
       const getBookedCount = (trainingId) => {
         return bookings
           .filter(b => b.training_id === trainingId)
           .reduce((sum, b) => sum + (b.persons_count || 1), 0);
+      };
+
+      // ЛОГІКА ДЛЯ АНАЛІТИКИ
+      const getAnalytics = () => {
+        let totalRevenue = 0;
+        let totalPersons = 0;
+        let totalBookings = allBookings.length;
+
+        const chartDataMap = {};
+
+        allBookings.forEach(b => {
+          const pCount = b.persons_count || 1;
+          const price = b.type === 'trial' ? 150 : 200;
+          
+          totalPersons += pCount;
+          totalRevenue += (price * pCount);
+
+          // Групування для графіка за датами тренувань
+          const tId = b.training_id;
+          // Отримуємо "ММ-ДД" з ID (напр. "t_2026-08-17" -> "08-17")
+          let shortDate = tId.startsWith('t_') ? tId.substring(7) : 'Старі';
+          
+          if (!chartDataMap[shortDate]) chartDataMap[shortDate] = 0;
+          chartDataMap[shortDate] += pCount;
+        });
+
+        // Формуємо масив для графіка і сортуємо по даті (алфавітно для ММ-ДД працює правильно)
+        const chartData = Object.keys(chartDataMap)
+          .map(k => ({ label: k, count: chartDataMap[k] }))
+          .sort((a, b) => a.label.localeCompare(b.label))
+          .slice(-12); // Беремо останні 12 дат
+
+        const maxChartValue = Math.max(10, ...chartData.map(d => d.count));
+
+        return { totalRevenue, totalPersons, totalBookings, chartData, maxChartValue };
       };
 
       const handleBooking = async (e) => {
@@ -416,6 +475,7 @@
               </div>
             )}
 
+            {/* --- МОЇ ЗАПИСИ --- */}
             {activeTab === 'my-bookings' && (
               <div className="space-y-4">
                 <div className="bg-white p-5 rounded-2xl border border-stone-300 shadow-sm">
@@ -462,7 +522,6 @@
                     <div className="space-y-3">
                       {foundBookings.map(b => {
                         const training = trainings.find(t => t.id === b.training_id);
-                        // Якщо запис на стару дату, яка вже не в розкладі
                         if (!training) return null;
 
                         return (
@@ -508,6 +567,7 @@
               </div>
             )}
 
+            {/* --- АДМІНКА --- */}
             {activeTab === 'admin' && (
               <div>
                 {!isAdminLoggedIn ? (
@@ -535,8 +595,9 @@
                   </div>
                 ) : (
                   <div className="space-y-4">
-                    <div className="flex justify-between items-center mb-4">
-                      <h2 className="font-serif-title text-2xl font-bold text-stone-900">Список груп</h2>
+                    
+                    <div className="flex justify-between items-center mb-1">
+                      <h2 className="font-serif-title text-2xl font-bold text-stone-900">Кабінет</h2>
                       <button 
                         onClick={() => setIsAdminLoggedIn(false)}
                         className="text-xs text-stone-500 underline hover:text-stone-900"
@@ -545,7 +606,24 @@
                       </button>
                     </div>
 
-                    {trainings.map(t => {
+                    {/* Підменю адмінки */}
+                    <div className="flex bg-stone-200/60 p-1 rounded-xl mb-4">
+                      <button 
+                        onClick={() => setAdminTab('groups')}
+                        className={`flex-1 text-xs font-bold py-2 rounded-lg transition-all ${adminTab === 'groups' ? 'bg-white shadow-sm text-stone-900' : 'text-stone-500 hover:text-stone-700'}`}
+                      >
+                        Групи (Актуальні)
+                      </button>
+                      <button 
+                        onClick={() => setAdminTab('analytics')}
+                        className={`flex-1 text-xs font-bold py-2 rounded-lg transition-all ${adminTab === 'analytics' ? 'bg-white shadow-sm text-stone-900' : 'text-stone-500 hover:text-stone-700'}`}
+                      >
+                        Аналітика
+                      </button>
+                    </div>
+
+                    {/* Вкладка ГРУПИ */}
+                    {adminTab === 'groups' && trainings.map(t => {
                       const groupBookings = bookings.filter(b => b.training_id === t.id);
                       const bookedCount = getBookedCount(t.id);
 
@@ -605,12 +683,92 @@
                         </div>
                       );
                     })}
+
+                    {/* Вкладка АНАЛІТИКА */}
+                    {adminTab === 'analytics' && (() => {
+                      const { totalRevenue, totalPersons, totalBookings, chartData, maxChartValue } = getAnalytics();
+
+                      return (
+                        <div className="space-y-4">
+                          
+                          {/* KPI Картки */}
+                          <div className="grid grid-cols-2 gap-3">
+                            <div className="bg-stone-900 text-white p-4 rounded-2xl shadow-md col-span-2">
+                              <p className="text-xs font-bold text-stone-400 uppercase tracking-wider mb-1">Загальний дохід</p>
+                              <p className="text-3xl font-serif-title">{totalRevenue} ₴</p>
+                            </div>
+                            <div className="bg-white border border-stone-300 p-4 rounded-2xl shadow-sm">
+                              <p className="text-[10px] font-bold text-stone-500 uppercase tracking-wider mb-1">Всього людей</p>
+                              <p className="text-xl font-bold text-stone-900">{totalPersons}</p>
+                            </div>
+                            <div className="bg-white border border-stone-300 p-4 rounded-2xl shadow-sm">
+                              <p className="text-[10px] font-bold text-stone-500 uppercase tracking-wider mb-1">Всього заявок</p>
+                              <p className="text-xl font-bold text-stone-900">{totalBookings}</p>
+                            </div>
+                          </div>
+
+                          {/* Графік відвідуваності */}
+                          <div className="bg-white border border-stone-300 p-4 rounded-2xl shadow-sm">
+                            <h3 className="font-bold text-sm text-stone-900 mb-4">Динаміка заповненості (останні дати)</h3>
+                            
+                            {chartData.length === 0 ? (
+                              <p className="text-xs text-stone-400 text-center italic py-4">Ще немає достатньо даних</p>
+                            ) : (
+                              <div className="flex items-end gap-3 h-32 overflow-x-auto no-scrollbar pt-2 pb-1">
+                                {chartData.map((d, i) => (
+                                  <div key={i} className="flex flex-col items-center justify-end h-full min-w-[32px] group relative">
+                                    {/* Підказка при натисканні/наведенні */}
+                                    <div className="absolute -top-7 bg-stone-800 text-white text-[10px] font-bold px-2 py-1 rounded opacity-0 group-hover:opacity-100 transition-opacity whitespace-nowrap">
+                                      {d.count} осіб
+                                    </div>
+                                    <div 
+                                      className="w-full bg-amber-900/80 rounded-t-md hover:bg-amber-900 transition-all" 
+                                      style={{ height: `${Math.max(10, (d.count / maxChartValue) * 100)}%` }}
+                                    ></div>
+                                    <span className="text-[9px] font-bold text-stone-500 mt-2 rotate-45 origin-left w-6">{d.label}</span>
+                                  </div>
+                                ))}
+                              </div>
+                            )}
+                          </div>
+
+                          {/* Історія записів */}
+                          <div className="bg-white border border-stone-300 p-4 rounded-2xl shadow-sm">
+                            <h3 className="font-bold text-sm text-stone-900 mb-3">Історія записів (всі)</h3>
+                            
+                            <div className="space-y-2 max-h-[400px] overflow-y-auto no-scrollbar pr-1">
+                              {allBookings.map((b, i) => {
+                                const createDate = b.created_at ? new Date(b.created_at).toLocaleDateString('uk-UA', { day: '2-digit', month: '2-digit', year: '2-digit' }) : '';
+                                
+                                return (
+                                  <div key={b.id || i} className="flex items-center justify-between bg-stone-50 p-2.5 rounded-xl border border-stone-200">
+                                    <div>
+                                      <p className="font-bold text-xs text-stone-900">{b.name} <span className="text-[10px] text-stone-500 font-normal">({createDate})</span></p>
+                                      <p className="text-[10px] text-stone-600 mt-0.5">{b.phone || `@${b.instagram}`}</p>
+                                    </div>
+                                    <div className="text-right">
+                                      <p className="text-xs font-bold text-stone-800">{b.persons_count || 1} ос.</p>
+                                      <p className={`text-[9px] font-bold px-1.5 py-0.5 rounded mt-1 inline-block ${b.type === 'trial' ? 'bg-amber-100 text-amber-900' : 'bg-stone-200 text-stone-800'}`}>
+                                        {b.type === 'trial' ? '150₴' : '200₴'}
+                                      </p>
+                                    </div>
+                                  </div>
+                                )
+                              })}
+                            </div>
+                          </div>
+
+                        </div>
+                      );
+                    })()}
+
                   </div>
                 )}
               </div>
             )}
           </main>
 
+          {/* МОДАЛКА ПЕРЕНОСУ */}
           {rescheduleModal && (
             <div className="fixed inset-0 bg-stone-950/75 backdrop-blur-sm flex items-end sm:items-center justify-center p-0 sm:p-4 z-50">
               <div className="bg-white w-full sm:max-w-md rounded-t-3xl sm:rounded-2xl p-6 shadow-2xl border border-stone-300">
@@ -663,6 +821,7 @@
             </div>
           )}
 
+          {/* МОДАЛКА СТВОРЕННЯ ЗАПИСУ */}
           {bookingModal && (() => {
             const freeSlots = bookingModal.training.maxCapacity - getBookedCount(bookingModal.training.id);
             const pricePerPerson = bookingModal.type === 'trial' ? 150 : 200;
