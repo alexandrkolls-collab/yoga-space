@@ -8,11 +8,11 @@
   <script src="https://unpkg.com/react@18/umd/react.development.js"></script>
   <script src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
   <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
-  
+
   <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
-  
+
   <link href="https://fonts.googleapis.com/css2?family=Playfair+Display:ital,wght@0,600;0,700;1,400&family=Montserrat:wght@400;500;600;700&display=swap" rel="stylesheet">
-  
+
   <style>
     body {
       font-family: 'Montserrat', sans-serif;
@@ -44,49 +44,66 @@
   <script type="text/babel">
     const { useState, useEffect } = React;
 
-    const ADMIN_PIN = '172528'; 
+    const ADMIN_PIN = '172528';
     const TELEGRAM_BOT_TOKEN = '8681415848:AAE4GQINEMMcU5usUAItyxfz766iROh4vcE';
     const TELEGRAM_CHAT_ID = '631622135';
 
     const SUPABASE_URL = 'https://fbmkawjfoqhbcblitoma.supabase.co';
     const SUPABASE_ANON_KEY = 'sb_publishable_JJv5HkOiwzCVsqTVrXU7Gg_l-vGJqD4';
     const supabase = window.supabase ? window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY) : null;
+    const isSupabaseConfigured = !!supabase && !SUPABASE_URL.includes('YOUR_SUPABASE_PROJECT');
 
-    const TARGET_DAYS = [1, 3, 5];
-    const HOUR_START = 20;
-    const MINUTE_START = 15;
+    const DAY_NAMES = { 0: 'Неділя', 1: 'Понеділок', 2: 'Вівторок', 3: 'Середа', 4: 'Четвер', 5: "П'ятниця", 6: 'Субота' };
+
+    // Групи занять: вечірня (як і раніше) + нова ранкова з 2 вересня 2026
+    const GROUPS = [
+      { key: 'evening', label: 'Вечірня', days: [1, 3, 5], hour: 20, minute: 15, startDate: null },
+      { key: 'morning', label: 'Ранкова', days: [3, 6], hour: 8, minute: 45, startDate: new Date(2026, 8, 2) }
+    ];
 
     const getUpcomingTrainings = () => {
       const now = new Date();
       const trainings = [];
 
-      TARGET_DAYS.forEach(targetDay => {
-        let date = new Date(now);
-        const day = date.getDay();
-        
-        let diff = targetDay - day;
-        if (diff < 0) diff += 7; 
-        
-        if (diff === 0) {
-          if (now.getHours() > HOUR_START || (now.getHours() === HOUR_START && now.getMinutes() >= MINUTE_START)) {
-            diff += 7;
+      GROUPS.forEach(group => {
+        group.days.forEach(targetDay => {
+          let date = new Date(now);
+          const day = date.getDay();
+
+          let diff = targetDay - day;
+          if (diff < 0) diff += 7;
+
+          if (diff === 0) {
+            if (now.getHours() > group.hour || (now.getHours() === group.hour && now.getMinutes() >= group.minute)) {
+              diff += 7;
+            }
           }
-        }
 
-        date.setDate(date.getDate() + diff);
-        date.setHours(0, 0, 0, 0);
+          date.setDate(date.getDate() + diff);
+          date.setHours(0, 0, 0, 0);
 
-        const dayName = targetDay === 1 ? 'Понеділок' : targetDay === 3 ? 'Середа' : "П'ятниця";
-        const formattedDate = date.toLocaleDateString('uk-UA', { day: 'numeric', month: 'long' });
-        const id = `t_${date.getFullYear()}-${String(date.getMonth()+1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
+          // Якщо в групи є дата старту (наприклад, нова ранкова група) - зсуваємо на тижні вперед
+          if (group.startDate) {
+            while (date < group.startDate) {
+              date.setDate(date.getDate() + 7);
+            }
+          }
 
-        trainings.push({
-          id: id,
-          day: dayName,
-          date: formattedDate,
-          fullDate: date,
-          time: '20:15',
-          maxCapacity: 10
+          const dayName = DAY_NAMES[targetDay];
+          const formattedDate = date.toLocaleDateString('uk-UA', { day: 'numeric', month: 'long' });
+          const timeStr = `${String(group.hour).padStart(2, '0')}:${String(group.minute).padStart(2, '0')}`;
+          const id = `t_${group.key}_${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
+
+          trainings.push({
+            id: id,
+            day: dayName,
+            date: formattedDate,
+            fullDate: date,
+            time: timeStr,
+            maxCapacity: 10,
+            groupKey: group.key,
+            groupLabel: group.label
+          });
         });
       });
 
@@ -96,6 +113,31 @@
     const normalizeContact = (str) => {
       if (!str) return '';
       return str.toLowerCase().replace(/[\s\+\-\(\)@]/g, '');
+    };
+
+    // Ключ телефону для акаунтів/абонементів: відкидає код країни та трунк-нуль,
+    // залишає останні 9 цифр (стандартна довжина укр. номера без +380 / 0),
+    // тому +380971234567, 0971234567 та 971234567 вважаються ОДНИМ і тим самим номером.
+    const normalizePhoneKey = (str) => {
+      if (!str) return '';
+      const digits = str.replace(/\D/g, '');
+      return digits.length > 9 ? digits.slice(-9) : digits;
+    };
+
+    // --- Хешування пароля (SHA-256 + сіль) через Web Crypto API ---
+    // Пароль ніколи не зберігається у відкритому вигляді: у базі лишається лише
+    // хеш + індивідуальна сіль, з яких відновити оригінальний пароль неможливо.
+    const generateSalt = () => {
+      const arr = new Uint8Array(16);
+      crypto.getRandomValues(arr);
+      return Array.from(arr).map(b => b.toString(16).padStart(2, '0')).join('');
+    };
+
+    const hashPassword = async (password, salt) => {
+      const enc = new TextEncoder();
+      const data = enc.encode(`${salt}:${password}`);
+      const hashBuffer = await crypto.subtle.digest('SHA-256', data);
+      return Array.from(new Uint8Array(hashBuffer)).map(b => b.toString(16).padStart(2, '0')).join('');
     };
 
     const sendTelegramNotification = async (text) => {
@@ -112,24 +154,37 @@
 
     function App() {
       const [bookings, setBookings] = useState([]);
-      const [allBookings, setAllBookings] = useState([]); 
+      const [allBookings, setAllBookings] = useState([]);
       const [trainings, setTrainings] = useState([]);
-      
-      const [activeTab, setActiveTab] = useState('client'); 
-      const [adminTab, setAdminTab] = useState('groups'); 
-      
-      const [bookingModal, setBookingModal] = useState(null); 
-      const [rescheduleModal, setRescheduleModal] = useState(null); 
-      
+
+      const [activeTab, setActiveTab] = useState('client');
+      const [adminTab, setAdminTab] = useState('groups');
+      const [scheduleGroupTab, setScheduleGroupTab] = useState('evening');
+
+      const [bookingModal, setBookingModal] = useState(null);
+      const [rescheduleModal, setRescheduleModal] = useState(null);
+
       const [isAdminLoggedIn, setIsAdminLoggedIn] = useState(false);
       const [pinInput, setPinInput] = useState('');
       const [pinError, setPinError] = useState(false);
 
-      const [formData, setFormData] = useState({ 
+      const [formData, setFormData] = useState({
         lastName: '', name: '', phone: '', instagram: '', needReminder: true, reminderTime: '3h'
       });
       const [contactError, setContactError] = useState(false);
       const [userSearchQuery, setUserSearchQuery] = useState('');
+      const [useSubscription, setUseSubscription] = useState(false);
+
+      // --- Особистий кабінет клієнта ---
+      const [clientAuth, setClientAuth] = useState(null);
+      const [clientAuthView, setClientAuthView] = useState('login'); // 'login' | 'register'
+      const [loginForm, setLoginForm] = useState({ phone: '', password: '' });
+      const [regForm, setRegForm] = useState({ name: '', phone: '', password: '', password2: '' });
+      const [authError, setAuthError] = useState('');
+
+      // --- Клієнти (адмінка) ---
+      const [clients, setClients] = useState([]);
+      const [newClientForm, setNewClientForm] = useState({ name: '', phone: '', subscription_total: '' });
 
       useEffect(() => {
         setTrainings(getUpcomingTrainings());
@@ -151,11 +206,12 @@
       useEffect(() => {
         if (isAdminLoggedIn) {
           fetchAllBookings();
+          fetchClients();
         }
       }, [isAdminLoggedIn]);
 
       const fetchBookings = async () => {
-        if (!supabase || SUPABASE_URL.includes('YOUR_SUPABASE_PROJECT')) {
+        if (!isSupabaseConfigured) {
           const local = localStorage.getItem('yoga_baryshivka_db_bookings');
           setBookings(local ? JSON.parse(local) : []);
           return;
@@ -174,7 +230,7 @@
       };
 
       const fetchAllBookings = async () => {
-        if (!supabase || SUPABASE_URL.includes('YOUR_SUPABASE_PROJECT')) {
+        if (!isSupabaseConfigured) {
           const local = localStorage.getItem('yoga_baryshivka_db_bookings');
           setAllBookings(local ? JSON.parse(local) : []);
           return;
@@ -187,6 +243,23 @@
 
         if (!error && data) {
           setAllBookings(data);
+        }
+      };
+
+      const fetchClients = async () => {
+        if (!isSupabaseConfigured) {
+          const local = localStorage.getItem('yoga_baryshivka_db_clients');
+          setClients(local ? JSON.parse(local) : []);
+          return;
+        }
+
+        const { data, error } = await supabase
+          .from('clients')
+          .select('*')
+          .order('created_at', { ascending: false });
+
+        if (!error && data) {
+          setClients(data);
         }
       };
 
@@ -205,14 +278,15 @@
 
         allBookings.forEach(b => {
           const pCount = b.persons_count || 1;
-          const price = b.type === 'trial' ? 150 : 200;
-          
+          const price = b.type === 'trial' ? 150 : (b.type === 'subscription' ? 0 : 200);
+
           totalPersons += pCount;
           totalRevenue += (price * pCount);
 
           const tId = b.training_id;
-          let shortDate = tId.startsWith('t_') ? tId.substring(7) : 'Старі';
-          
+          // Останні 5 символів id завжди відповідають MM-DD незалежно від префікса групи
+          let shortDate = tId && tId.length >= 5 ? tId.slice(-5) : 'Старі';
+
           if (!chartDataMap[shortDate]) chartDataMap[shortDate] = 0;
           chartDataMap[shortDate] += pCount;
         });
@@ -220,7 +294,7 @@
         const chartData = Object.keys(chartDataMap)
           .map(k => ({ label: k, count: chartDataMap[k] }))
           .sort((a, b) => a.label.localeCompare(b.label))
-          .slice(-12); 
+          .slice(-12);
 
         const maxChartValue = Math.max(10, ...chartData.map(d => d.count));
 
@@ -229,18 +303,18 @@
 
       const handleClearHistory = async () => {
         const pass = prompt('УВАГА! Це видалить абсолютно всі записи з бази без можливості відновлення.\n\nВведіть ПІН-код для підтвердження:');
-        
+
         if (pass !== ADMIN_PIN) {
           if (pass !== null) alert('Невірний ПІН-код! Очищення скасовано.');
           return;
         }
-        
+
         if (!confirm('Ви абсолютно впевнені? Цю дію неможливо скасувати!')) return;
 
-        if (supabase && !SUPABASE_URL.includes('YOUR_SUPABASE_PROJECT')) {
+        if (isSupabaseConfigured) {
           await supabase.from('bookings').delete().neq('id', '0');
-        } 
-        
+        }
+
         setBookings([]);
         setAllBookings([]);
         localStorage.removeItem('yoga_baryshivka_db_bookings');
@@ -251,14 +325,16 @@
         e.preventDefault();
         const phoneClean = formData.phone.trim();
         const instaClean = formData.instagram.trim();
-        
+
         if (!phoneClean && !instaClean) {
           setContactError(true);
           return;
         }
 
         const fullName = `${formData.lastName.trim()} ${formData.name.trim()}`;
-        const pricePerPerson = bookingModal.type === 'trial' ? 150 : 200;
+        const usingSubscription = !!(useSubscription && clientAuth && clientAuth.subscription_remaining > 0);
+        const bookingType = usingSubscription ? 'subscription' : bookingModal.type;
+        const pricePerPerson = usingSubscription ? 0 : (bookingModal.type === 'trial' ? 150 : 200);
 
         const newBooking = {
           id: 'b_' + Date.now(),
@@ -266,13 +342,13 @@
           name: fullName,
           phone: phoneClean,
           instagram: instaClean,
-          type: bookingModal.type,
+          type: bookingType,
           persons_count: 1,
           need_reminder: formData.needReminder,
           reminder_time: formData.needReminder ? formData.reminderTime : null
         };
 
-        if (supabase && !SUPABASE_URL.includes('YOUR_SUPABASE_PROJECT')) {
+        if (isSupabaseConfigured) {
           await supabase.from('bookings').insert([newBooking]);
         } else {
           const updated = [...bookings, newBooking];
@@ -280,22 +356,43 @@
           localStorage.setItem('yoga_baryshivka_db_bookings', JSON.stringify(updated));
         }
 
+        // Списання заняття з абонементу
+        if (usingSubscription) {
+          const newRemaining = clientAuth.subscription_remaining - 1;
+          if (isSupabaseConfigured) {
+            await supabase.from('clients').update({ subscription_remaining: newRemaining }).eq('id', clientAuth.id);
+          } else {
+            const list = JSON.parse(localStorage.getItem('yoga_baryshivka_db_clients') || '[]');
+            const idx = list.findIndex(c => c.id === clientAuth.id);
+            if (idx >= 0) {
+              list[idx].subscription_remaining = newRemaining;
+              localStorage.setItem('yoga_baryshivka_db_clients', JSON.stringify(list));
+            }
+          }
+          setClientAuth({ ...clientAuth, subscription_remaining: newRemaining });
+        }
+
         localStorage.setItem('yoga_user_contact', phoneClean || instaClean);
 
+        const typeLabel = usingSubscription
+          ? 'Абонемент (списано заняття)'
+          : (bookingModal.type === 'trial' ? 'Пробне (150₴)' : 'Повторне (200₴)');
+
         const messageText = `🧘 <b>НОВИЙ ЗАПИС НА ЙОГУ!</b>\n\n` +
-          `📅 <b>День:</b> ${bookingModal.training.day}, ${bookingModal.training.date}\n` +
+          `📅 <b>День:</b> ${bookingModal.training.day} (${bookingModal.training.groupLabel}), ${bookingModal.training.date}\n` +
           `👤 <b>Клієнт:</b> ${fullName}\n` +
-          `🎟️ <b>Тип:</b> ${bookingModal.type === 'trial' ? 'Пробне (150₴)' : 'Повторне (200₴)'}\n` +
+          `🎟️ <b>Тип:</b> ${typeLabel}\n` +
           `💰 <b>Сума:</b> ${pricePerPerson}₴\n\n` +
           `📞 <b>Телефон:</b> ${phoneClean || 'Не вказано'}\n` +
           `📸 <b>Instagram:</b> ${instaClean ? '@' + instaClean.replace('@', '') : 'Не вказано'}\n` +
           `🔔 <b>Нагадування:</b> ${formData.needReminder ? (formData.reminderTime === '1d' ? 'За 1 день' : 'За 3 години') : 'Ні'}`;
 
         sendTelegramNotification(messageText);
-        
+
         setFormData({ lastName: '', name: '', phone: '', instagram: '', needReminder: true, reminderTime: '3h' });
         setBookingModal(null);
         setContactError(false);
+        setUseSubscription(false);
         alert(`Дякуємо! Ви успішно записані 🙏`);
       };
 
@@ -305,7 +402,7 @@
         const cancelledBooking = bookings.find(b => b.id === bookingId) || allBookings.find(b => b.id === bookingId);
         const trainingInfo = trainings.find(t => t.id === cancelledBooking?.training_id);
 
-        if (supabase && !SUPABASE_URL.includes('YOUR_SUPABASE_PROJECT')) {
+        if (isSupabaseConfigured) {
           await supabase.from('bookings').delete().eq('id', bookingId);
         } else {
           const updated = bookings.filter(b => b.id !== bookingId);
@@ -330,7 +427,7 @@
         const oldTraining = trainings.find(t => t.id === currentTrainingId);
         const newTraining = trainings.find(t => t.id === targetTrainingId);
 
-        if (supabase && !SUPABASE_URL.includes('YOUR_SUPABASE_PROJECT')) {
+        if (isSupabaseConfigured) {
           await supabase.from('bookings').update({ training_id: targetTrainingId }).eq('id', booking.id);
         } else {
           const updated = bookings.map(b => b.id === booking.id ? { ...b, training_id: targetTrainingId } : b);
@@ -360,34 +457,284 @@
         }
       };
 
+      // --- Реєстрація / вхід клієнта ---
+      // Телефон завжди приводимо до "ключа" без коду країни (normalizePhoneKey),
+      // тому +380971234567 в адмінці та 0971234567 при самостійній реєстрації - це один клієнт.
+      // Пароль ніколи не порівнюється і не зберігається у відкритому вигляді - лише хеш+сіль.
+      const handleClientLogin = async (e) => {
+        e.preventDefault();
+        setAuthError('');
+        const phoneKey = normalizePhoneKey(loginForm.phone);
+
+        let found = null;
+        if (isSupabaseConfigured) {
+          const { data } = await supabase.from('clients').select('*').eq('phone', phoneKey).maybeSingle();
+          found = data;
+        } else {
+          const list = JSON.parse(localStorage.getItem('yoga_baryshivka_db_clients') || '[]');
+          found = list.find(c => c.phone === phoneKey) || null;
+        }
+
+        if (!found || !found.password_hash || !found.password_salt) {
+          setAuthError('Невірний телефон або пароль.');
+          return;
+        }
+
+        const enteredHash = await hashPassword(loginForm.password, found.password_salt);
+        if (enteredHash !== found.password_hash) {
+          setAuthError('Невірний телефон або пароль.');
+          return;
+        }
+
+        setClientAuth(found);
+        localStorage.setItem('yoga_client_phone', phoneKey);
+        setLoginForm({ phone: '', password: '' });
+      };
+
+      const handleClientRegister = async (e) => {
+        e.preventDefault();
+        setAuthError('');
+
+        const phoneKey = normalizePhoneKey(regForm.phone);
+        if (!regForm.name.trim() || !phoneKey || !regForm.password) {
+          setAuthError('Заповніть усі поля.');
+          return;
+        }
+        if (regForm.password.length < 4) {
+          setAuthError('Пароль має містити щонайменше 4 символи.');
+          return;
+        }
+        if (regForm.password !== regForm.password2) {
+          setAuthError('Паролі не співпадають.');
+          return;
+        }
+
+        const salt = generateSalt();
+        const passwordHash = await hashPassword(regForm.password, salt);
+
+        if (isSupabaseConfigured) {
+          const { data: existing } = await supabase.from('clients').select('*').eq('phone', phoneKey).maybeSingle();
+
+          if (existing && existing.password_hash) {
+            setAuthError('Клієнт з таким телефоном вже зареєстрований. Скористайтесь входом.');
+            return;
+          }
+
+          if (existing) {
+            const { data, error } = await supabase.from('clients')
+              .update({ name: regForm.name.trim(), password_hash: passwordHash, password_salt: salt })
+              .eq('id', existing.id)
+              .select()
+              .single();
+            if (!error) setClientAuth(data);
+          } else {
+            const newClient = {
+              id: 'c_' + Date.now(),
+              phone: phoneKey,
+              name: regForm.name.trim(),
+              password_hash: passwordHash,
+              password_salt: salt,
+              subscription_total: 0,
+              subscription_remaining: 0
+            };
+            const { data, error } = await supabase.from('clients').insert([newClient]).select().single();
+            if (!error) setClientAuth(data);
+          }
+        } else {
+          const list = JSON.parse(localStorage.getItem('yoga_baryshivka_db_clients') || '[]');
+          const idx = list.findIndex(c => c.phone === phoneKey);
+
+          if (idx >= 0 && list[idx].password_hash) {
+            setAuthError('Клієнт з таким телефоном вже зареєстрований. Скористайтесь входом.');
+            return;
+          }
+
+          if (idx >= 0) {
+            list[idx] = { ...list[idx], name: regForm.name.trim(), password_hash: passwordHash, password_salt: salt };
+            localStorage.setItem('yoga_baryshivka_db_clients', JSON.stringify(list));
+            setClientAuth(list[idx]);
+          } else {
+            const newClient = {
+              id: 'c_' + Date.now(),
+              phone: phoneKey,
+              name: regForm.name.trim(),
+              password_hash: passwordHash,
+              password_salt: salt,
+              subscription_total: 0,
+              subscription_remaining: 0
+            };
+            list.push(newClient);
+            localStorage.setItem('yoga_baryshivka_db_clients', JSON.stringify(list));
+            setClientAuth(newClient);
+          }
+        }
+
+        localStorage.setItem('yoga_client_phone', phoneKey);
+        setRegForm({ name: '', phone: '', password: '', password2: '' });
+      };
+
+      // --- Адмінка: керування клієнтами та абонементами ---
+      const updateClientField = (id, field, value) => {
+        setClients(prev => prev.map(c => c.id === id ? { ...c, [field]: value } : c));
+      };
+
+      const saveClientSubscription = async (client) => {
+        const total = parseInt(client.subscription_total) || 0;
+        const remaining = parseInt(client.subscription_remaining) || 0;
+
+        if (isSupabaseConfigured) {
+          await supabase.from('clients').update({ subscription_total: total, subscription_remaining: remaining }).eq('id', client.id);
+        } else {
+          const list = JSON.parse(localStorage.getItem('yoga_baryshivka_db_clients') || '[]');
+          const idx = list.findIndex(c => c.id === client.id);
+          if (idx >= 0) {
+            list[idx] = { ...list[idx], subscription_total: total, subscription_remaining: remaining };
+            localStorage.setItem('yoga_baryshivka_db_clients', JSON.stringify(list));
+          }
+        }
+
+        if (clientAuth && clientAuth.id === client.id) {
+          setClientAuth({ ...clientAuth, subscription_total: total, subscription_remaining: remaining });
+        }
+
+        alert('Дані клієнта збережено!');
+        fetchClients();
+      };
+
+      const handleAdminAddClient = async (e) => {
+        e.preventDefault();
+        // Ключ телефону без коду країни - щоб +380971234567 (адмінка) і 0971234567
+        // (самостійна реєстрація клієнта) розпізнавались як один і той самий номер.
+        const phoneKey = normalizePhoneKey(newClientForm.phone);
+        if (!phoneKey) {
+          alert('Вкажіть телефон клієнта.');
+          return;
+        }
+        const total = parseInt(newClientForm.subscription_total) || 0;
+
+        if (isSupabaseConfigured) {
+          const { data: existing } = await supabase.from('clients').select('*').eq('phone', phoneKey).maybeSingle();
+          if (existing) {
+            await supabase.from('clients').update({
+              subscription_total: total,
+              subscription_remaining: total,
+              name: newClientForm.name.trim() || existing.name
+            }).eq('id', existing.id);
+          } else {
+            await supabase.from('clients').insert([{
+              id: 'c_' + Date.now(),
+              phone: phoneKey,
+              name: newClientForm.name.trim(),
+              password_hash: null,
+              password_salt: null,
+              subscription_total: total,
+              subscription_remaining: total
+            }]);
+          }
+        } else {
+          const list = JSON.parse(localStorage.getItem('yoga_baryshivka_db_clients') || '[]');
+          const idx = list.findIndex(c => c.phone === phoneKey);
+          if (idx >= 0) {
+            list[idx] = { ...list[idx], subscription_total: total, subscription_remaining: total, name: newClientForm.name.trim() || list[idx].name };
+          } else {
+            list.push({
+              id: 'c_' + Date.now(),
+              phone: phoneKey,
+              name: newClientForm.name.trim(),
+              password_hash: null,
+              password_salt: null,
+              subscription_total: total,
+              subscription_remaining: total
+            });
+          }
+          localStorage.setItem('yoga_baryshivka_db_clients', JSON.stringify(list));
+        }
+
+        setNewClientForm({ name: '', phone: '', subscription_total: '' });
+        fetchClients();
+      };
+
+      // Картка одного запису (використовується і в "Мої записи", і в "Кабінеті")
+      const renderBookingCard = (b) => {
+        const training = trainings.find(t => t.id === b.training_id);
+        if (!training) return null;
+
+        return (
+          <div key={b.id} className="bg-white border border-stone-300 rounded-2xl p-4 shadow-sm">
+            <div className="flex justify-between items-start mb-2 pb-2 border-b border-stone-200">
+              <div>
+                <span className={`text-xs font-bold uppercase ${training.groupKey === 'morning' ? 'text-amber-600' : 'text-indigo-950'}`}>
+                  {training.groupKey === 'morning' ? '☀️' : '🌙'} {training.day} • {training.date} • {training.groupLabel}
+                </span>
+                <h4 className="font-bold text-stone-900 text-base">{b.name}</h4>
+              </div>
+            </div>
+
+            {b.need_reminder && (
+              <p className="text-[11px] font-bold text-stone-600 mb-3 flex items-center gap-1">
+                <span>🔔 Нагадування:</span>
+                <span className="text-amber-900">{b.reminder_time === '1d' ? 'За 1 день' : 'За 3 години'}</span>
+              </p>
+            )}
+
+            <div className="flex gap-2 pt-1">
+              <button
+                onClick={() => setRescheduleModal({ currentTrainingId: b.training_id, booking: b })}
+                className="flex-1 py-2.5 bg-stone-100 hover:bg-stone-200 text-stone-900 text-xs font-bold rounded-xl border border-stone-300 transition-all"
+              >
+                🔄 Перенести
+              </button>
+
+              <button
+                onClick={() => handleCancelBooking(b.id)}
+                className="flex-1 py-2.5 bg-red-50 hover:bg-red-100 text-red-700 text-xs font-bold rounded-xl border border-red-200 transition-all"
+              >
+                ✕ Скасувати
+              </button>
+            </div>
+          </div>
+        );
+      };
+
       return (
         <div className="max-w-md mx-auto min-h-screen flex flex-col justify-between p-4 sm:p-6">
-          
+
           <header className="mb-6 text-center mt-2">
             <h1 className="text-4xl sm:text-5xl font-serif-title font-bold text-stone-900 mb-1 tracking-widest uppercase">ЙОГА</h1>
             <p className="text-xs tracking-widest text-stone-600 uppercase font-bold">Yoga Space Baryshivka</p>
-            
-            <nav className="flex justify-center gap-4 sm:gap-6 mt-5 border-b border-stone-300 pb-3 text-xs font-bold uppercase tracking-wider">
-              <button 
-                onClick={() => setActiveTab('client')} 
+
+            <nav className="flex flex-wrap justify-center gap-3 sm:gap-5 mt-5 border-b border-stone-300 pb-3 text-xs font-bold uppercase tracking-wider">
+              <button
+                onClick={() => setActiveTab('client')}
                 className={activeTab === 'client' ? 'text-stone-950 border-b-2 border-stone-900 pb-1' : 'text-stone-400 hover:text-stone-700'}
               >
                 Розклад
               </button>
 
-              <button 
+              <button
                 onClick={() => {
                   setActiveTab('my-bookings');
                   const savedContact = localStorage.getItem('yoga_user_contact');
                   if (savedContact) setUserSearchQuery(savedContact);
-                }} 
+                }}
                 className={activeTab === 'my-bookings' ? 'text-stone-950 border-b-2 border-stone-900 pb-1' : 'text-stone-400 hover:text-stone-700'}
               >
                 Мої записи
               </button>
 
-              <button 
-                onClick={() => setActiveTab('admin')} 
+              <button
+                onClick={() => {
+                  setActiveTab('account');
+                  const savedPhone = localStorage.getItem('yoga_client_phone');
+                  if (savedPhone && !clientAuth) setLoginForm(prev => ({ ...prev, phone: savedPhone }));
+                }}
+                className={activeTab === 'account' ? 'text-stone-950 border-b-2 border-stone-900 pb-1' : 'text-stone-400 hover:text-stone-700'}
+              >
+                Кабінет
+              </button>
+
+              <button
+                onClick={() => setActiveTab('admin')}
                 className={activeTab === 'admin' ? 'text-stone-950 border-b-2 border-stone-900 pb-1' : 'text-stone-400 hover:text-stone-700'}
               >
                 Адмінка
@@ -396,11 +743,11 @@
           </header>
 
           <main className="flex-1">
-            
+
             {/* ВІДКРИТА ЧАСТИНА ДЛЯ КЛІЄНТІВ */}
             {activeTab === 'client' && (
               <div className="space-y-6">
-                
+
                 <div className="bg-stone-100/90 p-5 rounded-2xl border border-stone-300 text-center space-y-3 shadow-sm">
                   <div>
                     <p className="text-[11px] uppercase tracking-widest text-stone-500 font-bold mb-0.5">Стиль</p>
@@ -409,7 +756,8 @@
                   <div className="w-12 h-px bg-stone-300 mx-auto"></div>
                   <div>
                     <p className="text-sm font-bold text-stone-800">Тривалість: 45-50 хв</p>
-                    <p className="text-xs font-medium text-stone-600 mt-0.5">Понеділок, Середа, П'ятниця о 20:15</p>
+                    <p className="text-xs font-medium text-stone-600 mt-0.5">Пн, Ср, Пт о 20:15 (вечірня)</p>
+                    <p className="text-xs font-medium text-stone-600 mt-0.5">Ср, Сб о 8:45 (ранкова, з 2 вересня)</p>
                   </div>
 
                   <div className="bg-white p-3 rounded-xl border border-stone-200 shadow-inner flex items-center justify-center gap-2">
@@ -426,24 +774,57 @@
 
                 <div className="space-y-4">
                   <h2 className="text-center font-serif-title text-2xl font-bold text-stone-900 mb-2">Розклад та Запис</h2>
-                  
-                  {trainings.map(t => {
+
+                  {/* ПЕРЕМИКАЧ РАНОК / ВЕЧІР - яскраво виділений, перед списком груп */}
+                  <div className="grid grid-cols-2 gap-2.5 p-1.5 bg-stone-200/70 rounded-2xl">
+                    <button
+                      onClick={() => setScheduleGroupTab('evening')}
+                      className={`py-3.5 rounded-xl text-xs font-extrabold uppercase tracking-wider transition-all flex items-center justify-center gap-1.5 ${
+                        scheduleGroupTab === 'evening'
+                          ? 'bg-indigo-950 text-white shadow-lg shadow-indigo-950/30 scale-[1.02]'
+                          : 'bg-white/70 text-indigo-950/50 hover:bg-white'
+                      }`}
+                    >
+                      <span className="text-base">🌙</span> Вечірні
+                    </button>
+                    <button
+                      onClick={() => setScheduleGroupTab('morning')}
+                      className={`py-3.5 rounded-xl text-xs font-extrabold uppercase tracking-wider transition-all flex items-center justify-center gap-1.5 ${
+                        scheduleGroupTab === 'morning'
+                          ? 'bg-amber-500 text-white shadow-lg shadow-amber-500/40 scale-[1.02]'
+                          : 'bg-white/70 text-amber-700/60 hover:bg-white'
+                      }`}
+                    >
+                      <span className="text-base">☀️</span> Ранкові
+                    </button>
+                  </div>
+                  <p className="text-center text-[10px] font-bold text-stone-400 -mt-2">
+                    {scheduleGroupTab === 'evening' ? 'Понеділок, Середа, П\'ятниця о 20:15' : "Середа, Субота о 8:45 · з 2 вересня"}
+                  </p>
+
+                  {trainings.filter(t => t.groupKey === scheduleGroupTab).map(t => {
                     const bookedCount = getBookedCount(t.id);
                     const freeSlots = t.maxCapacity - bookedCount;
                     const isFull = freeSlots <= 0;
                     const fillPercentage = Math.min(100, (bookedCount / t.maxCapacity) * 100);
+                    const isMorning = t.groupKey === 'morning';
 
                     return (
-                      <div key={t.id} className="bg-white border border-stone-300 rounded-2xl p-5 shadow-sm relative overflow-hidden">
-                        <div className="absolute left-0 top-0 bottom-0 w-1.5 bg-stone-800"></div>
-                        
+                      <div key={t.id} className={`bg-white border-2 rounded-2xl p-5 shadow-sm relative overflow-hidden ${isMorning ? 'border-amber-300' : 'border-indigo-950/20'}`}>
+                        <div className={`absolute left-0 top-0 bottom-0 w-1.5 ${isMorning ? 'bg-amber-500' : 'bg-indigo-950'}`}></div>
+
                         <div className="flex justify-between items-center mb-1">
                           <div>
-                            <h3 className="font-serif-title text-2xl font-bold text-stone-900">{t.day}</h3>
+                            <div className="flex items-center gap-2">
+                              <h3 className="font-serif-title text-2xl font-bold text-stone-900">{t.day}</h3>
+                              <span className={`text-[9px] font-bold text-white px-2 py-0.5 rounded-full uppercase tracking-wide ${isMorning ? 'bg-amber-500' : 'bg-indigo-950'}`}>
+                                {isMorning ? '☀️ ' : '🌙 '}{t.groupLabel}
+                              </span>
+                            </div>
                             <p className="text-[11px] font-bold text-stone-400 uppercase tracking-wider mt-0.5">{t.date}</p>
                           </div>
                           <div className="text-right">
-                            <span className="text-2xl font-bold text-stone-800">{t.time}</span>
+                            <span className={`text-2xl font-bold ${isMorning ? 'text-amber-600' : 'text-indigo-950'}`}>{t.time}</span>
                           </div>
                         </div>
 
@@ -455,14 +836,14 @@
                               {isFull ? 'Група заповнена' : `Вільних місць: ${freeSlots} з ${t.maxCapacity}`}
                             </span>
                           </div>
-                          
+
                           <div className="w-full bg-stone-200 rounded-full h-2 overflow-hidden flex">
-                            <div 
-                              className={`h-full rounded-full transition-all duration-500 ${isFull ? 'bg-red-500' : (freeSlots <= 3 ? 'bg-amber-500' : 'bg-stone-800')}`} 
+                            <div
+                              className={`h-full rounded-full transition-all duration-500 ${isFull ? 'bg-red-500' : (freeSlots <= 3 ? 'bg-amber-500' : (isMorning ? 'bg-amber-500' : 'bg-indigo-950'))}`}
                               style={{ width: `${fillPercentage}%` }}
                             ></div>
                           </div>
-                          
+
                           {freeSlots > 0 && freeSlots <= 3 && (
                             <p className="text-[10px] font-bold text-amber-600 mt-2 text-center animate-pulse">🔥 Залишилося мало місць, встигніть записатися!</p>
                           )}
@@ -471,10 +852,13 @@
                         <div className="grid grid-cols-2 gap-2 mt-2">
                           <button
                             disabled={isFull}
-                            onClick={() => { setBookingModal({ training: t, type: 'trial' }); }}
+                            onClick={() => {
+                              setUseSubscription(!!(clientAuth && clientAuth.subscription_remaining > 0));
+                              setBookingModal({ training: t, type: 'trial' });
+                            }}
                             className={`py-3 px-2 rounded-xl text-xs font-bold uppercase tracking-wider transition-all text-center ${
-                              isFull 
-                                ? 'bg-stone-100 text-stone-400 border border-stone-200 cursor-not-allowed' 
+                              isFull
+                                ? 'bg-stone-100 text-stone-400 border border-stone-200 cursor-not-allowed'
                                 : 'bg-amber-100 text-amber-950 border border-amber-300 hover:bg-amber-200 active:scale-[0.98]'
                             }`}
                           >
@@ -483,11 +867,14 @@
 
                           <button
                             disabled={isFull}
-                            onClick={() => { setBookingModal({ training: t, type: 'regular' }); }}
-                            className={`py-3 px-2 rounded-xl text-xs font-bold uppercase tracking-wider transition-all text-center shadow-sm ${
-                              isFull 
-                                ? 'bg-stone-100 text-stone-400 border border-stone-200 cursor-not-allowed' 
-                                : 'bg-stone-800 text-white hover:bg-stone-900 active:scale-[0.98]'
+                            onClick={() => {
+                              setUseSubscription(!!(clientAuth && clientAuth.subscription_remaining > 0));
+                              setBookingModal({ training: t, type: 'regular' });
+                            }}
+                            className={`py-3 px-2 rounded-xl text-xs font-bold uppercase tracking-wider transition-all text-center shadow-sm text-white active:scale-[0.98] ${
+                              isFull
+                                ? 'bg-stone-100 text-stone-400 border border-stone-200 cursor-not-allowed'
+                                : (isMorning ? 'bg-amber-500 hover:bg-amber-600' : 'bg-indigo-950 hover:bg-indigo-900')
                             }`}
                           >
                             Повторне (200₴)
@@ -496,8 +883,12 @@
                       </div>
                     );
                   })}
+
+                  {trainings.filter(t => t.groupKey === scheduleGroupTab).length === 0 && (
+                    <p className="text-xs text-stone-400 text-center italic py-6">Найближчих занять цієї групи поки немає.</p>
+                  )}
                 </div>
-                
+
                 <div className="text-center text-xs text-stone-600 mt-8 pt-6 border-t border-stone-300">
                   <p className="font-bold text-stone-900 mb-0.5">Адреса проведення:</p>
                   <p className="font-medium">Баришівка, вул. Центральна 2а, 3 поверх</p>
@@ -505,13 +896,13 @@
               </div>
             )}
 
-            {/* --- ПОШУК СВОЇХ ЗАПИСІВ --- */}
+            {/* --- ПОШУК СВОЇХ ЗАПИСІВ (без реєстрації) --- */}
             {activeTab === 'my-bookings' && (
               <div className="space-y-4">
                 <div className="bg-white p-5 rounded-2xl border border-stone-300 shadow-sm">
                   <h3 className="font-serif-title text-xl font-bold text-stone-900 mb-1">Пошук ваших записів</h3>
                   <p className="text-xs text-stone-600 mb-3">Введіть ваш повний телефон або нікнейм Instagram:</p>
-                  
+
                   <input
                     type="text"
                     placeholder="Напр. +380971234567 або username"
@@ -535,7 +926,7 @@
                     const instaNorm = normalizeContact(b.instagram);
 
                     const matchPhone = phoneNorm && (
-                      phoneNorm === queryNorm || 
+                      phoneNorm === queryNorm ||
                       (phoneNorm.endsWith(queryNorm) && queryNorm.length >= 9) ||
                       (queryNorm.endsWith(phoneNorm) && phoneNorm.length >= 9)
                     );
@@ -548,49 +939,106 @@
                     return <p className="text-xs text-stone-500 text-center py-6 italic">Записів за цим контактом не знайдено.</p>;
                   }
 
-                  return (
-                    <div className="space-y-3">
-                      {foundBookings.map(b => {
-                        const training = trainings.find(t => t.id === b.training_id);
-                        if (!training) return null;
-
-                        return (
-                          <div key={b.id} className="bg-white border border-stone-300 rounded-2xl p-4 shadow-sm">
-                            <div className="flex justify-between items-start mb-2 pb-2 border-b border-stone-200">
-                              <div>
-                                <span className="text-xs font-bold text-amber-900 uppercase">{training.day} • {training.date}</span>
-                                <h4 className="font-bold text-stone-900 text-base">{b.name}</h4>
-                              </div>
-                            </div>
-
-                            {b.need_reminder && (
-                              <p className="text-[11px] font-bold text-stone-600 mb-3 flex items-center gap-1">
-                                <span>🔔 Нагадування:</span>
-                                <span className="text-amber-900">{b.reminder_time === '1d' ? 'За 1 день' : 'За 3 години'}</span>
-                              </p>
-                            )}
-
-                            <div className="flex gap-2 pt-1">
-                              <button
-                                onClick={() => setRescheduleModal({ currentTrainingId: b.training_id, booking: b })}
-                                className="flex-1 py-2.5 bg-stone-100 hover:bg-stone-200 text-stone-900 text-xs font-bold rounded-xl border border-stone-300 transition-all"
-                              >
-                                🔄 Перенести
-                              </button>
-
-                              <button
-                                onClick={() => handleCancelBooking(b.id)}
-                                className="flex-1 py-2.5 bg-red-50 hover:bg-red-100 text-red-700 text-xs font-bold rounded-xl border border-red-200 transition-all"
-                              >
-                                ✕ Скасувати
-                              </button>
-                            </div>
-                          </div>
-                        );
-                      })}
-                    </div>
-                  );
+                  return <div className="space-y-3">{foundBookings.map(renderBookingCard)}</div>;
                 })()}
+              </div>
+            )}
+
+            {/* --- ОСОБИСТИЙ КАБІНЕТ (опційна реєстрація) --- */}
+            {activeTab === 'account' && (
+              <div className="space-y-4">
+                {!clientAuth ? (
+                  <div className="bg-white border border-stone-300 rounded-2xl p-6 shadow-sm">
+                    <div className="flex gap-4 mb-4 border-b border-stone-200 pb-2 justify-center text-xs font-bold uppercase tracking-wider">
+                      <button onClick={() => { setClientAuthView('login'); setAuthError(''); }} className={clientAuthView === 'login' ? 'text-stone-950 border-b-2 border-stone-900 pb-1' : 'text-stone-400'}>Вхід</button>
+                      <button onClick={() => { setClientAuthView('register'); setAuthError(''); }} className={clientAuthView === 'register' ? 'text-stone-950 border-b-2 border-stone-900 pb-1' : 'text-stone-400'}>Реєстрація</button>
+                    </div>
+
+                    {clientAuthView === 'login' ? (
+                      <form onSubmit={handleClientLogin} className="space-y-3">
+                        <input
+                          type="tel" required placeholder="Телефон (код країни не обов'язковий)"
+                          value={loginForm.phone}
+                          onChange={(e) => setLoginForm({ ...loginForm, phone: e.target.value })}
+                          className="w-full bg-stone-50 border-2 border-stone-200 text-stone-900 font-semibold rounded-xl px-3.5 py-2.5 text-sm focus:outline-none focus:border-stone-800"
+                        />
+                        <input
+                          type="password" required placeholder="Пароль"
+                          value={loginForm.password}
+                          onChange={(e) => setLoginForm({ ...loginForm, password: e.target.value })}
+                          className="w-full bg-stone-50 border-2 border-stone-200 text-stone-900 font-semibold rounded-xl px-3.5 py-2.5 text-sm focus:outline-none focus:border-stone-800"
+                        />
+                        {authError && <p className="text-xs font-bold text-red-600 text-center">{authError}</p>}
+                        <button type="submit" className="w-full py-3 bg-stone-900 text-white font-bold text-xs uppercase tracking-wider rounded-xl hover:bg-stone-950">Увійти</button>
+                      </form>
+                    ) : (
+                      <form onSubmit={handleClientRegister} className="space-y-3">
+                        <input
+                          required placeholder="Ім'я та прізвище"
+                          value={regForm.name}
+                          onChange={(e) => setRegForm({ ...regForm, name: e.target.value })}
+                          className="w-full bg-stone-50 border-2 border-stone-200 text-stone-900 font-semibold rounded-xl px-3.5 py-2.5 text-sm focus:outline-none focus:border-stone-800"
+                        />
+                        <input
+                          type="tel" required placeholder="Телефон (код країни не обов'язковий)"
+                          value={regForm.phone}
+                          onChange={(e) => setRegForm({ ...regForm, phone: e.target.value })}
+                          className="w-full bg-stone-50 border-2 border-stone-200 text-stone-900 font-semibold rounded-xl px-3.5 py-2.5 text-sm focus:outline-none focus:border-stone-800"
+                        />
+                        <input
+                          type="password" required placeholder="Пароль"
+                          value={regForm.password}
+                          onChange={(e) => setRegForm({ ...regForm, password: e.target.value })}
+                          className="w-full bg-stone-50 border-2 border-stone-200 text-stone-900 font-semibold rounded-xl px-3.5 py-2.5 text-sm focus:outline-none focus:border-stone-800"
+                        />
+                        <input
+                          type="password" required placeholder="Повторіть пароль"
+                          value={regForm.password2}
+                          onChange={(e) => setRegForm({ ...regForm, password2: e.target.value })}
+                          className="w-full bg-stone-50 border-2 border-stone-200 text-stone-900 font-semibold rounded-xl px-3.5 py-2.5 text-sm focus:outline-none focus:border-stone-800"
+                        />
+                        {authError && <p className="text-xs font-bold text-red-600 text-center">{authError}</p>}
+                        <button type="submit" className="w-full py-3 bg-stone-900 text-white font-bold text-xs uppercase tracking-wider rounded-xl hover:bg-stone-950">Зареєструватися</button>
+                      </form>
+                    )}
+
+                    <p className="text-[10px] text-stone-400 text-center mt-4 leading-relaxed">
+                      Реєстрація не обов'язкова — записатись на заняття можна і без акаунту, у вкладці «Розклад».
+                    </p>
+                  </div>
+                ) : (
+                  <div className="space-y-4">
+                    <div className="bg-stone-900 text-white p-5 rounded-2xl shadow-md">
+                      <p className="text-xs font-bold text-stone-400 uppercase tracking-wider mb-1">Вітаємо,</p>
+                      <p className="text-xl font-serif-title font-bold mb-3">{clientAuth.name}</p>
+                      <div className="w-full h-px bg-stone-700 mb-3"></div>
+                      <p className="text-xs font-bold text-stone-400 uppercase tracking-wider mb-1">Абонемент</p>
+                      {clientAuth.subscription_total > 0 ? (
+                        <p className="text-2xl font-serif-title">
+                          {clientAuth.subscription_remaining} <span className="text-sm text-stone-400">із {clientAuth.subscription_total} занять</span>
+                        </p>
+                      ) : (
+                        <p className="text-sm text-stone-400">Абонемент не активований. Зверніться до адміністратора.</p>
+                      )}
+                    </div>
+
+                    <button
+                      onClick={() => setClientAuth(null)}
+                      className="w-full py-2.5 bg-stone-100 hover:bg-stone-200 text-stone-700 text-xs font-bold rounded-xl border border-stone-300"
+                    >
+                      Вийти з акаунту
+                    </button>
+
+                    <h3 className="font-serif-title text-lg font-bold text-stone-900 mt-4">Ваші записи:</h3>
+                    {(() => {
+                      const myBookings = bookings.filter(b => normalizePhoneKey(b.phone) === clientAuth.phone);
+                      if (myBookings.length === 0) {
+                        return <p className="text-xs text-stone-500 text-center py-6 italic">У вас поки немає активних записів.</p>;
+                      }
+                      return <div className="space-y-3">{myBookings.map(renderBookingCard)}</div>;
+                    })()}
+                  </div>
+                )}
               </div>
             )}
 
@@ -601,7 +1049,7 @@
                   <div className="bg-white border border-stone-300 rounded-2xl p-6 text-center shadow-sm">
                     <h2 className="font-serif-title text-2xl font-bold text-stone-900 mb-2">Вхід в Адмінку</h2>
                     <p className="text-xs text-stone-600 mb-4">Введіть ПИН-код адміністратора:</p>
-                    
+
                     <form onSubmit={handleAdminLogin} className="space-y-3">
                       <input
                         type="password"
@@ -611,7 +1059,7 @@
                         className="w-full bg-stone-50 border-2 border-stone-200 text-center font-bold text-lg rounded-xl px-4 py-2.5 text-stone-900 focus:outline-none focus:border-stone-800"
                       />
                       {pinError && <p className="text-xs font-bold text-red-600">Невірний ПИН-код!</p>}
-                      
+
                       <button
                         type="submit"
                         className="w-full py-3 bg-stone-900 text-white font-bold text-xs uppercase tracking-wider rounded-xl hover:bg-stone-950"
@@ -622,10 +1070,10 @@
                   </div>
                 ) : (
                   <div className="space-y-4">
-                    
+
                     <div className="flex justify-between items-center mb-1">
                       <h2 className="font-serif-title text-2xl font-bold text-stone-900">Кабінет</h2>
-                      <button 
+                      <button
                         onClick={() => setIsAdminLoggedIn(false)}
                         className="text-xs text-stone-500 underline hover:text-stone-900"
                       >
@@ -635,13 +1083,19 @@
 
                     {/* Підменю адмінки */}
                     <div className="flex bg-stone-200/60 p-1 rounded-xl mb-4">
-                      <button 
+                      <button
                         onClick={() => setAdminTab('groups')}
                         className={`flex-1 text-xs font-bold py-2 rounded-lg transition-all ${adminTab === 'groups' ? 'bg-white shadow-sm text-stone-900' : 'text-stone-500 hover:text-stone-700'}`}
                       >
-                        Групи (Актуальні)
+                        Групи
                       </button>
-                      <button 
+                      <button
+                        onClick={() => setAdminTab('clients')}
+                        className={`flex-1 text-xs font-bold py-2 rounded-lg transition-all ${adminTab === 'clients' ? 'bg-white shadow-sm text-stone-900' : 'text-stone-500 hover:text-stone-700'}`}
+                      >
+                        Клієнти
+                      </button>
+                      <button
                         onClick={() => setAdminTab('analytics')}
                         className={`flex-1 text-xs font-bold py-2 rounded-lg transition-all ${adminTab === 'analytics' ? 'bg-white shadow-sm text-stone-900' : 'text-stone-500 hover:text-stone-700'}`}
                       >
@@ -658,7 +1112,12 @@
                         <div key={t.id} className="bg-white border border-stone-300 rounded-2xl p-4 shadow-sm">
                           <div className="flex justify-between items-center mb-3 pb-2 border-b border-stone-200">
                             <div>
-                              <h3 className="font-bold text-stone-900">{t.day} ({t.time})</h3>
+                              <h3 className="font-bold text-stone-900">
+                                {t.day} ({t.time})
+                                <span className={`text-[10px] font-bold uppercase ml-2 px-1.5 py-0.5 rounded ${t.groupKey === 'morning' ? 'bg-amber-100 text-amber-700' : 'bg-indigo-100 text-indigo-950'}`}>
+                                  {t.groupKey === 'morning' ? '☀️' : '🌙'} {t.groupLabel}
+                                </span>
+                              </h3>
                               <p className="text-[11px] font-bold text-stone-500 uppercase">{t.date}</p>
                               <p className="text-xs font-medium text-amber-900 mt-1">Зайнято місць: {bookedCount} з {t.maxCapacity}</p>
                             </div>
@@ -675,8 +1134,8 @@
                                       <span className="text-xs font-bold text-stone-400">{idx + 1}.</span>
                                       <p className="font-bold text-sm text-stone-900">{b.name}</p>
 
-                                      <span className={`text-[10px] font-bold px-2 py-0.5 rounded-md uppercase ${b.type === 'trial' ? 'bg-amber-100 text-amber-900 border border-amber-300' : 'bg-stone-200 text-stone-800'}`}>
-                                        {b.type === 'trial' ? 'Пробне' : 'Повторне'}
+                                      <span className={`text-[10px] font-bold px-2 py-0.5 rounded-md uppercase ${b.type === 'trial' ? 'bg-amber-100 text-amber-900 border border-amber-300' : (b.type === 'subscription' ? 'bg-emerald-100 text-emerald-900 border border-emerald-300' : 'bg-stone-200 text-stone-800')}`}>
+                                        {b.type === 'trial' ? 'Пробне' : (b.type === 'subscription' ? 'Абонемент' : 'Повторне')}
                                       </span>
 
                                       {b.need_reminder && (
@@ -705,13 +1164,84 @@
                       );
                     })}
 
+                    {/* Вкладка КЛІЄНТИ / АБОНЕМЕНТИ */}
+                    {adminTab === 'clients' && (
+                      <div className="space-y-3">
+                        <div className="bg-white border border-stone-300 rounded-2xl p-4 shadow-sm">
+                          <h3 className="font-bold text-sm text-stone-900 mb-3">Додати клієнта / оформити абонемент</h3>
+                          <p className="text-[10px] text-stone-500 mb-3">Якщо клієнт з таким телефоном ще не реєструвався — картку буде створено. Коли він потім зареєструється сам (навіть без коду країни +38), абонемент вже буде на місці.</p>
+                          <form onSubmit={handleAdminAddClient} className="space-y-2">
+                            <input
+                              placeholder="Ім'я клієнта"
+                              value={newClientForm.name}
+                              onChange={(e) => setNewClientForm({ ...newClientForm, name: e.target.value })}
+                              className="w-full bg-stone-50 border-2 border-stone-200 rounded-xl px-3 py-2.5 text-sm font-semibold focus:outline-none focus:border-stone-800"
+                            />
+                            <input
+                              required
+                              placeholder="Телефон (напр. +380971234567)"
+                              value={newClientForm.phone}
+                              onChange={(e) => setNewClientForm({ ...newClientForm, phone: e.target.value })}
+                              className="w-full bg-stone-50 border-2 border-stone-200 rounded-xl px-3 py-2.5 text-sm font-semibold focus:outline-none focus:border-stone-800"
+                            />
+                            <input
+                              type="number" min="0"
+                              placeholder="Кількість занять в абонементі"
+                              value={newClientForm.subscription_total}
+                              onChange={(e) => setNewClientForm({ ...newClientForm, subscription_total: e.target.value })}
+                              className="w-full bg-stone-50 border-2 border-stone-200 rounded-xl px-3 py-2.5 text-sm font-semibold focus:outline-none focus:border-stone-800"
+                            />
+                            <button type="submit" className="w-full py-2.5 bg-stone-900 text-white font-bold text-xs uppercase tracking-wider rounded-xl hover:bg-stone-950">
+                              Зберегти
+                            </button>
+                          </form>
+                        </div>
+
+                        {clients.length === 0 ? (
+                          <p className="text-xs text-stone-400 py-4 text-center italic">Клієнтів ще немає</p>
+                        ) : clients.map(c => (
+                          <div key={c.id} className="bg-white border border-stone-300 rounded-2xl p-4 shadow-sm">
+                            <p className="font-bold text-sm text-stone-900">{c.name || '(без імені)'}</p>
+                            <p className="text-xs text-stone-500 mb-3">{c.phone} {!c.password_hash && <span className="italic">· ще не реєструвався</span>}</p>
+                            <div className="flex items-center gap-2">
+                              <div>
+                                <label className="block text-[9px] font-bold text-stone-400 uppercase mb-0.5">Залишилось</label>
+                                <input
+                                  type="number" min="0"
+                                  value={c.subscription_remaining}
+                                  onChange={(e) => updateClientField(c.id, 'subscription_remaining', e.target.value)}
+                                  className="w-20 border-2 border-stone-200 rounded-lg px-2 py-1.5 text-sm font-bold focus:outline-none focus:border-stone-800"
+                                />
+                              </div>
+                              <span className="text-xs text-stone-400 mt-4">із</span>
+                              <div>
+                                <label className="block text-[9px] font-bold text-stone-400 uppercase mb-0.5">Всього</label>
+                                <input
+                                  type="number" min="0"
+                                  value={c.subscription_total}
+                                  onChange={(e) => updateClientField(c.id, 'subscription_total', e.target.value)}
+                                  className="w-20 border-2 border-stone-200 rounded-lg px-2 py-1.5 text-sm font-bold focus:outline-none focus:border-stone-800"
+                                />
+                              </div>
+                              <button
+                                onClick={() => saveClientSubscription(c)}
+                                className="ml-auto mt-4 text-xs font-bold bg-stone-900 text-white px-3 py-2 rounded-lg hover:bg-stone-950"
+                              >
+                                Зберегти
+                              </button>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+
                     {/* Вкладка АНАЛІТИКА */}
                     {adminTab === 'analytics' && (() => {
                       const { totalRevenue, totalPersons, totalBookings, chartData, maxChartValue } = getAnalytics();
 
                       return (
                         <div className="space-y-4">
-                          
+
                           {/* KPI Картки */}
                           <div className="grid grid-cols-2 gap-3">
                             <div className="bg-stone-900 text-white p-4 rounded-2xl shadow-md col-span-2">
@@ -731,7 +1261,7 @@
                           {/* Графік відвідуваності */}
                           <div className="bg-white border border-stone-300 p-4 rounded-2xl shadow-sm">
                             <h3 className="font-bold text-sm text-stone-900 mb-4">Динаміка заповненості (останні дати)</h3>
-                            
+
                             {chartData.length === 0 ? (
                               <p className="text-xs text-stone-400 text-center italic py-4">Ще немає достатньо даних</p>
                             ) : (
@@ -741,8 +1271,8 @@
                                     <div className="absolute -top-7 bg-stone-800 text-white text-[10px] font-bold px-2 py-1 rounded opacity-0 group-hover:opacity-100 transition-opacity whitespace-nowrap">
                                       {d.count} осіб
                                     </div>
-                                    <div 
-                                      className="w-full bg-amber-900/80 rounded-t-md hover:bg-amber-900 transition-all" 
+                                    <div
+                                      className="w-full bg-amber-900/80 rounded-t-md hover:bg-amber-900 transition-all"
                                       style={{ height: `${Math.max(10, (d.count / maxChartValue) * 100)}%` }}
                                     ></div>
                                     <span className="text-[9px] font-bold text-stone-500 mt-2 rotate-45 origin-left w-6">{d.label}</span>
@@ -755,11 +1285,11 @@
                           {/* Історія записів */}
                           <div className="bg-white border border-stone-300 p-4 rounded-2xl shadow-sm">
                             <h3 className="font-bold text-sm text-stone-900 mb-3">Історія записів (всі)</h3>
-                            
+
                             <div className="space-y-2 max-h-[400px] overflow-y-auto no-scrollbar pr-1">
                               {allBookings.map((b, i) => {
                                 const createDate = b.created_at ? new Date(b.created_at).toLocaleDateString('uk-UA', { day: '2-digit', month: '2-digit', year: '2-digit' }) : '';
-                                
+
                                 return (
                                   <div key={b.id || i} className="flex items-center justify-between bg-stone-50 p-2.5 rounded-xl border border-stone-200">
                                     <div>
@@ -767,18 +1297,18 @@
                                       <p className="text-[10px] text-stone-600 mt-0.5">{b.phone || `@${b.instagram}`}</p>
                                     </div>
                                     <div className="text-right">
-                                      <p className={`text-[9px] font-bold px-1.5 py-0.5 rounded inline-block ${b.type === 'trial' ? 'bg-amber-100 text-amber-900' : 'bg-stone-200 text-stone-800'}`}>
-                                        {b.type === 'trial' ? '150₴' : '200₴'}
+                                      <p className={`text-[9px] font-bold px-1.5 py-0.5 rounded inline-block ${b.type === 'trial' ? 'bg-amber-100 text-amber-900' : (b.type === 'subscription' ? 'bg-emerald-100 text-emerald-900' : 'bg-stone-200 text-stone-800')}`}>
+                                        {b.type === 'trial' ? '150₴' : (b.type === 'subscription' ? 'Абонемент' : '200₴')}
                                       </p>
                                     </div>
                                   </div>
                                 )
                               })}
                             </div>
-                            
+
                             {/* КНОПКА ОЧИЩЕННЯ БАЗИ ДАНИХ */}
                             <div className="mt-5 pt-4 border-t border-stone-200">
-                              <button 
+                              <button
                                 onClick={handleClearHistory}
                                 className="w-full py-3 bg-red-50 hover:bg-red-100 text-red-600 border border-red-200 rounded-xl text-xs font-bold uppercase tracking-wider transition-all"
                               >
@@ -801,7 +1331,7 @@
           </main>
 
           {/* МОДАЛКИ (Перенос та Створення) */}
-          
+
           {rescheduleModal && (
             <div className="fixed inset-0 bg-stone-950/75 backdrop-blur-sm flex items-end sm:items-center justify-center p-0 sm:p-4 z-50">
               <div className="bg-white w-full sm:max-w-md rounded-t-3xl sm:rounded-2xl p-6 shadow-2xl border border-stone-300">
@@ -825,15 +1355,20 @@
                         disabled={isCurrent || !canFit}
                         onClick={() => handleReschedule(t.id)}
                         className={`w-full p-3.5 rounded-xl border font-bold text-xs text-left flex justify-between items-center transition-all ${
-                          isCurrent 
-                            ? 'bg-stone-100 border-stone-200 text-stone-400 cursor-default' 
-                            : !canFit 
+                          isCurrent
+                            ? 'bg-stone-100 border-stone-200 text-stone-400 cursor-default'
+                            : !canFit
                               ? 'bg-stone-50 border-stone-200 text-red-400 cursor-not-allowed'
                               : 'bg-white border-stone-300 text-stone-900 hover:bg-amber-50 hover:border-amber-300'
                         }`}
                       >
                         <div>
-                          <span className="text-sm block">{t.day} ({t.time})</span>
+                          <span className="text-sm block">
+                            {t.day} ({t.time}){' '}
+                            <span className={`text-[9px] uppercase font-bold px-1.5 py-0.5 rounded ${t.groupKey === 'morning' ? 'bg-amber-100 text-amber-700' : 'bg-indigo-100 text-indigo-950'}`}>
+                              {t.groupKey === 'morning' ? '☀️' : '🌙'} {t.groupLabel}
+                            </span>
+                          </span>
                           <span className="text-[10px] font-normal text-stone-500">
                             {isCurrent ? 'Поточна дата' : `Вільних місць: ${freeSlots} • ${t.date}`}
                           </span>
@@ -844,8 +1379,8 @@
                   })}
                 </div>
 
-                <button 
-                  onClick={() => setRescheduleModal(null)} 
+                <button
+                  onClick={() => setRescheduleModal(null)}
                   className="w-full py-3 bg-stone-200 font-bold text-xs rounded-xl text-stone-800"
                 >
                   Скасувати
@@ -855,23 +1390,24 @@
           )}
 
           {bookingModal && (() => {
-            const pricePerPerson = bookingModal.type === 'trial' ? 150 : 200;
+            const usingSubscription = !!(useSubscription && clientAuth && clientAuth.subscription_remaining > 0);
+            const pricePerPerson = usingSubscription ? 0 : (bookingModal.type === 'trial' ? 150 : 200);
 
             return (
               <div className="fixed inset-0 bg-stone-950/75 backdrop-blur-sm flex items-end sm:items-center justify-center p-0 sm:p-4 z-50">
                 <div className="bg-white w-full sm:max-w-md rounded-t-3xl sm:rounded-2xl p-6 shadow-2xl border border-stone-300 max-h-[90vh] overflow-y-auto">
-                  
+
                   <div className="flex justify-between items-start mb-5 pb-3 border-b border-stone-200">
                     <div>
                       <h3 className="font-serif-title text-2xl font-bold text-stone-900">
                         {bookingModal.type === 'trial' ? 'Пробне заняття' : 'Запис на йогу'}
                       </h3>
                       <p className="text-xs font-bold text-stone-500 uppercase tracking-wider mt-1">
-                        {bookingModal.training.day} • {bookingModal.training.date}
+                        {bookingModal.training.day} ({bookingModal.training.groupLabel}) • {bookingModal.training.date}
                       </p>
                     </div>
-                    <button 
-                      onClick={() => { setBookingModal(null); setContactError(false); }} 
+                    <button
+                      onClick={() => { setBookingModal(null); setContactError(false); setUseSubscription(false); }}
                       className="text-stone-500 hover:text-stone-900 bg-stone-100 rounded-full w-8 h-8 flex items-center justify-center text-sm font-bold"
                     >
                       ✕
@@ -879,7 +1415,7 @@
                   </div>
 
                   <form onSubmit={handleBooking} className="space-y-4">
-                    
+
                     {/* Поля Прізвище та Ім'я */}
                     <div className="grid grid-cols-2 gap-2">
                       <div>
@@ -887,10 +1423,10 @@
                           Прізвище
                         </label>
                         <input
-                          type="text" 
-                          required 
+                          type="text"
+                          required
                           placeholder="Прізвище"
-                          value={formData.lastName} 
+                          value={formData.lastName}
                           onChange={(e) => setFormData({ ...formData, lastName: e.target.value })}
                           className="w-full bg-stone-50 border-2 border-stone-200 text-stone-900 font-semibold rounded-xl px-3 py-3 text-sm focus:outline-none focus:border-stone-800 focus:bg-white placeholder-stone-400"
                         />
@@ -900,10 +1436,10 @@
                           Ім'я
                         </label>
                         <input
-                          type="text" 
-                          required 
+                          type="text"
+                          required
                           placeholder="Ім'я"
-                          value={formData.name} 
+                          value={formData.name}
                           onChange={(e) => setFormData({ ...formData, name: e.target.value })}
                           className="w-full bg-stone-50 border-2 border-stone-200 text-stone-900 font-semibold rounded-xl px-3 py-3 text-sm focus:outline-none focus:border-stone-800 focus:bg-white placeholder-stone-400"
                         />
@@ -914,13 +1450,13 @@
                       <p className="text-xs font-bold text-stone-900 mb-3 text-center">
                         Вкажіть хоча б один контакт для зв'язку:
                       </p>
-                      
+
                       <div className="space-y-3">
                         <div>
                           <input
-                            type="tel" 
+                            type="tel"
                             placeholder="Телефон (напр. +380...)"
-                            value={formData.phone} 
+                            value={formData.phone}
                             onChange={(e) => { setFormData({ ...formData, phone: e.target.value }); setContactError(false); }}
                             className={`w-full bg-white border-2 ${contactError ? 'border-red-500' : 'border-stone-300'} text-stone-900 font-semibold rounded-xl px-3.5 py-2.5 text-sm focus:outline-none focus:border-stone-800 placeholder-stone-400`}
                           />
@@ -934,9 +1470,9 @@
 
                         <div>
                           <input
-                            type="text" 
+                            type="text"
                             placeholder="Instagram (нікнейм)"
-                            value={formData.instagram} 
+                            value={formData.instagram}
                             onChange={(e) => { setFormData({ ...formData, instagram: e.target.value }); setContactError(false); }}
                             className={`w-full bg-white border-2 ${contactError ? 'border-red-500' : 'border-stone-300'} text-stone-900 font-semibold rounded-xl px-3.5 py-2.5 text-sm focus:outline-none focus:border-stone-800 placeholder-stone-400`}
                           />
@@ -949,6 +1485,20 @@
                         </p>
                       )}
                     </div>
+
+                    {clientAuth && clientAuth.subscription_remaining > 0 && (
+                      <label className="flex items-center gap-3 p-3.5 bg-emerald-50 border-2 border-emerald-200 rounded-xl cursor-pointer">
+                        <input
+                          type="checkbox"
+                          checked={useSubscription}
+                          onChange={(e) => setUseSubscription(e.target.checked)}
+                          className="w-5 h-5 accent-emerald-700 rounded cursor-pointer"
+                        />
+                        <span className="text-xs font-bold text-emerald-900">
+                          Списати заняття з абонементу (залишилось {clientAuth.subscription_remaining})
+                        </span>
+                      </label>
+                    )}
 
                     <div className="bg-amber-50/60 border-2 border-amber-200 rounded-2xl p-4 space-y-3">
                       <div className="flex items-center justify-between">
@@ -988,11 +1538,13 @@
                     </div>
 
                     <div className="pt-2">
-                      <button 
-                        type="submit" 
+                      <button
+                        type="submit"
                         className="w-full py-4 rounded-xl font-bold text-xs uppercase tracking-widest text-white bg-stone-900 hover:bg-stone-950 active:scale-[0.99] shadow-lg shadow-stone-900/30 transition-all"
                       >
-                        Підтвердити {bookingModal.type === 'trial' ? 'пробне' : 'запис'} ({pricePerPerson}₴)
+                        {usingSubscription
+                          ? `Підтвердити запис (з абонементу)`
+                          : `Підтвердити ${bookingModal.type === 'trial' ? 'пробне' : 'запис'} (${pricePerPerson}₴)`}
                       </button>
                     </div>
                   </form>
